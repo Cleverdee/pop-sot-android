@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- themed (single-colour) launcher icon: the hourglass and ring as shapes -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:pathData="M54,22a32,32 0,1 1,0 64a32,32 0,1 1,0 -64z" />
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.2"
+        android:pathData="M42.5,33C42.5,45 51,49 52.6,54C51,59 42.5,63 42.5,75L65.5,75C65.5,63 57,59 55.4,54C57,49 65.5,45 65.5,33Z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M46,42.5L62,42.5C60.5,47 56,49.5 54,53.5C52,49.5 47.5,47 46,42.5ZM43.6,75C45.5,69.5 50,67 54,66.5C58,67 62.5,69.5 64.4,75ZM53.5,54h1v13h-1zM38.6,32.5h2.4v43h-2.4zM67,32.5h2.4v43h-2.4zM35,28.5h38l-2,4.5h-34zM37,75h34l2,4.5h-38z" />
+</vector>

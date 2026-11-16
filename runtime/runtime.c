@@ -1,5 +1,6 @@
 /* Runtime for recompiled code: guest memory, PE image loading, function dispatch, traps. */
 #include "runtime.h"
+#define env_flag(name) ({ static int env_v_ = -1; if (env_v_ < 0) env_v_ = getenv(name) != NULL; env_v_; })
 
 #include <math.h>
 #include <pthread.h>
@@ -131,7 +132,7 @@ void call_indirect(CPU *c, uint32_t target) {
 void jump_indirect(CPU *c, uint32_t target, uint32_t from) {
     /* An indirect jump that isn't a known switch case: treat as a tail call. */
     GuestFn fn = lookup_function(target);
-    if (getenv("RC_LOG_JUMPS")) fprintf(stderr, "[jump] %08x -> %08x\n", from, target);
+    if (env_flag("RC_LOG_JUMPS")) fprintf(stderr, "[jump] %08x -> %08x\n", from, target);
     if (!fn) {
         fprintf(stderr, "indirect jump from %08x\n", from);
         guest_trap(c, target, "indirect jump to unknown target");

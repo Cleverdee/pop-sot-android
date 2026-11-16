@@ -385,6 +385,12 @@ class FunctionTranslator:
         self.insn_addrs = {i.address for i in insns}
         body = []
         unsupported = []
+        # The body is emitted in address order, but code can sit BELOW the entry: Ghidra merges a function that
+        # another one tail-jumps into (Two Thrones: 0x436040 ends in `jmp 0x435ba0`, so 0x435ba0.. becomes part of
+        # 0x436040). Without this jump the C function would start running at the lowest address instead.
+        if insns and insns[0].address != self.entry:
+            self.cur = self.entry
+            body.append((None, self.target_stmt(self.entry)))
         for k, ins in enumerate(insns):
             self.cur = ins.address
             try:

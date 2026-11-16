@@ -67,7 +67,7 @@ void handle_close(uint32_t h);
 
 /* ------------------------------------------------------------------ paths */
 
-extern char g_game_root[1024];   /* host folder holding the game's files */
+extern char g_game_root[4096];   /* host folder holding the game's files */
 extern char g_user_root[1024];   /* host folder for files the game writes outside its own folder */
 #define GUEST_ROOT PROFILE_GUEST_ROOT
 
@@ -115,5 +115,8 @@ void sched_yield_det(void);
 int sched_wait(int (*pred)(void *), void *arg, uint64_t deadline_us, uint64_t (*deadline_fn)(void));
 int sched_active(void);                           /* the calling thread is scheduled */
 uint64_t sched_now_us(void);
+
+/* an environment switch looked up once per call site (getenv scans the whole environment: costly per frame) */
+#define env_flag(name) ({ static int env_v_ = -1; if (env_v_ < 0) env_v_ = getenv(name) != NULL; env_v_; })
 
 #endif

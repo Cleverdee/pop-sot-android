@@ -86,8 +86,15 @@ static void cmd_flush(int ends_frame) { (void)ends_frame; }
  * RC_SCREENSHOTS="120,600" saves /tmp/rc_frame_N.png; `touch /tmp/rc_snap` or RC_CAPTURE=N logs
  * every draw of a frame and saves the back buffer after each one (native only). */
 
-static int g_snap_detail;
+#include <fcntl.h>
+#include <unistd.h>
+static int g_snap_detail, g_snap_saved_fd = -1;
+static float g_cam_c[12][4], g_cam_last[12][4];   /* c4-c7 of the frame's first shader draw (this frame / the last whole frame) */
+static int g_cam_seen;
+/* the camera's view-projection rows as the game passed them (c4..c7); 0 if none yet */
+int camera_constants(float out[12][4]) { memcpy(out, g_cam_last, sizeof g_cam_last); return 1; }
 static uint32_t g_f_drawn;
+extern char g_game_root[4096];
 double g_prof_draw, g_prof_present; uint64_t g_prof_verts, g_prof_draws_vs;   /* seconds spent recording draws / presenting (RC_LOG_FPS prints them per frame) */
 static uint32_t g_trace_vs;
 
@@ -101,15 +108,22 @@ static int want_screenshot(uint32_t frame) {
     if (cap_frame && frame + 1 == (uint32_t)cap_frame) { g_snap_detail = 1; return 0; }
     if (frame - last_check >= 15) {
         last_check = frame;
-        if (!access("/tmp/rc_snap", F_OK)) {
-            unlink("/tmp/rc_snap");
+        char snap_p[4200];   /* debugging: <game>/../snap.txt (Android: files/snap.txt) asks for a detailed frame */
+        snprintf(snap_p, sizeof snap_p, "%s/../snap.txt", g_game_root);
+        if (!access("/tmp/rc_snap", F_OK) || !access(snap_p, F_OK)) {
+            unlink("/tmp/rc_snap"); unlink(snap_p);
             g_snap_detail = 1;
+            /* the frame's log goes to <game>/../snap_out.txt: too many lines for the Android log pipe */
+            snprintf(snap_p, sizeof snap_p, "%s/../snap_out.txt", g_game_root);
+            int fd = open(snap_p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) { fflush(stderr); g_snap_saved_fd = dup(2); dup2(fd, 2); close(fd); }
             return 0;
         }
     }
     if (g_snap_detail) {
         g_snap_detail = 0;
         fprintf(stderr, "[snap] frame %u: %u draws\n", frame, g_f_drawn);
+        if (g_snap_saved_fd >= 0) { fflush(stderr); dup2(g_snap_saved_fd, 2); close(g_snap_saved_fd); g_snap_saved_fd = -1; }
         return 1;
     }
     static const char *list = (const char *)1;
@@ -218,7 +232,12 @@ static void unpack_color(uint32_t c, float *o) {
 static uint32_t sampler_key(const uint32_t *tss) {
     uint32_t mag = tss[16] >= 2, min = tss[17] >= 2, mip = tss[18];
     uint32_t au = tss[13] & 7, av = tss[14] & 7;
-    return mag | min << 1 | (mip & 3) << 2 | au << 4 | av << 7;   /* < 1024 */
+    uint32_t bc = 0;
+    if (au == 4 || av == 4) {   /* D3DTADDRESS_BORDER: nearest of the border colours Vulkan has (ARGB in tss[15]) */
+        uint32_t c = tss[15], a = c >> 24, l = ((c >> 16 & 255) + (c >> 8 & 255) + (c & 255)) / 3;
+        bc = a < 128 ? 0 : l >= 128 ? 2 : 1;
+    }
+    return mag | min << 1 | (mip & 3) << 2 | au << 4 | av << 7 | bc << 10;   /* < 4096 */
 }
 
 /* send a texture's contents if they changed since the last upload */
@@ -226,13 +245,84 @@ static uint32_t sampler_key(const uint32_t *tss) {
    needs hundreds of MB uncompressed, more than some GPUs/browsers give a page). WebGPU wants whole blocks,
    so the base level must be a multiple of 4; other textures are converted. */
 static uint32_t bc_format(const Texture *t) {
-    if (!g_gpu_bc || !format_is_dxt(t->format) || t->lw[0] % 4 || t->lh[0] % 4) return TEXFMT_RGBA8;
+    if (!format_is_dxt(t->format)) return TEXFMT_RGBA8;
+    if (!g_gpu_bc || t->lw[0] % 4 || t->lh[0] % 4) {   /* no BC sampling: decoded on the GPU (the CPU took ~20 ms per batch on Mali) */
+        static int cpu = -1;
+        if (cpu < 0) cpu = getenv("RC_CPU_DXT") != NULL;
+        if (cpu) return TEXFMT_RGBA8;
+        return t->format == FMT_DXT1 ? TEXFMT_DXT1_DEC : t->format <= FMT_DXT3 ? TEXFMT_DXT3_DEC : TEXFMT_DXT5_DEC;
+    }
     return t->format == FMT_DXT1 ? TEXFMT_BC1 : t->format <= FMT_DXT3 ? TEXFMT_BC2 : TEXFMT_BC3;
 }
 
+/* ------------------------------------------------------------------ texture fingerprints (UI draws)
+ * Menus and the HUD show in which 2D textures the game draws (the menu cursor most of all). Each texture
+ * gets a hash of its level 0 contents at upload; every 2D draw (pre-transformed FVF or the UI vertex shader
+ * 0x1007d) notes its texture's hash and where its first vertex is. ui_frame_done() hands each frame's list to
+ * the phase detector (host/gamephase.c); RC_LOG_UITEX=1 logs it every 2 s for finding new signals. */
+static uint32_t tex_fingerprint(const Texture *t) {
+    uint32_t h = 2166136261u ^ t->format ^ (t->lw[0] << 8) ^ (t->lh[0] << 20);
+    uint32_t rows = t->lh[0], row = t->pitch[0];
+    if (!t->mem[0][0] || !row) return 0;
+    if (format_is_dxt(t->format)) rows = (t->lh[0] + 3) / 4;
+    else if (row > t->lw[0] * 4) row = t->lw[0] * 4;
+    for (uint32_t y = 0; y < rows; y += rows > 64 ? rows / 64 : 1) {   /* up to ~64 sampled rows */
+        const uint8_t *p = HP(t->mem[0][0] + y * t->pitch[0]);
+        for (uint32_t x = 0; x + 3 < row; x += 4) { h ^= p[x] | p[x + 1] << 8 | (uint32_t)p[x + 2] << 16 | (uint32_t)p[x + 3] << 24; h *= 16777619u; }
+    }
+    return h ? h : 1;
+}
+#define UI_TEX_MAX 128
+typedef struct { uint32_t hash, wh; float x, y; } UiTex;
+static UiTex g_ui[UI_TEX_MAX], g_ui_last[UI_TEX_MAX];
+static uint32_t g_ui_n, g_ui_last_n;
+static void ui_note(const Texture *t, float x, float y) {
+    if (!t->content_hash) return;
+    for (uint32_t i = 0; i < g_ui_n; i++) if (g_ui[i].hash == t->content_hash) return;
+    if (g_ui_n < UI_TEX_MAX) { UiTex *u = &g_ui[g_ui_n++]; u->hash = t->content_hash; u->wh = t->lw[0] | t->lh[0] << 16; u->x = x; u->y = y; }
+}
+static void ui_frame_done(uint32_t frame) {
+    if (g_cam_seen) memcpy(g_cam_last, g_cam_c, sizeof g_cam_c);
+    g_cam_seen = 0;
+    {
+        static int log = -1;
+        if (log < 0) log = getenv("RC_LOG_CAM") != NULL;
+        if (log) {
+            fprintf(stderr, "[cam] %u", frame);
+            for (int r = 0; r < 12; r++) fprintf(stderr, " c%d %.3f %.3f %.3f %.2f", r, g_cam_last[r][0], g_cam_last[r][1], g_cam_last[r][2], g_cam_last[r][3]);
+            fprintf(stderr, "\n");
+        }
+    }
+    memcpy(g_ui_last, g_ui, g_ui_n * sizeof *g_ui);
+    g_ui_last_n = g_ui_n;
+    g_ui_n = 0;
+    extern void gamephase_frame(const uint32_t *hashes, const float *xy, uint32_t n);
+    uint32_t h[UI_TEX_MAX]; float xy[2 * UI_TEX_MAX];
+    for (uint32_t i = 0; i < g_ui_last_n; i++) { h[i] = g_ui_last[i].hash; xy[2 * i] = g_ui_last[i].x; xy[2 * i + 1] = g_ui_last[i].y; }
+    gamephase_frame(h, xy, g_ui_last_n);
+    static int log = -1;
+    static double last;
+    if (log < 0) log = getenv("RC_LOG_UITEX") != NULL;
+    if (log && host_seconds() - last >= 2.0) {
+        last = host_seconds();
+        fprintf(stderr, "[uitex] frame %u:", frame);
+        for (uint32_t i = 0; i < g_ui_last_n; i++)
+            fprintf(stderr, " %08x %ux%u@%.0f,%.0f", g_ui_last[i].hash, g_ui_last[i].wh & 0xffff, g_ui_last[i].wh >> 16, g_ui_last[i].x, g_ui_last[i].y);
+        fprintf(stderr, "\n");
+    }
+}
+
+static void sync_texture_impl(Device *d, Texture *t);
 static void sync_texture(Device *d, Texture *t) {
     if (t->sent_version == t->version) return;
-    uint32_t fmt = bc_format(t), bs = fmt == TEXFMT_BC1 ? 8 : 16;
+    extern double g_hx[]; extern uint32_t g_hxb[];
+    double t0 = host_seconds();
+    sync_texture_impl(d, t);
+    g_hx[1] += host_seconds() - t0; g_hxb[1] += t->lw[0] * t->lh[0] * 4;
+}
+static void sync_texture_impl(Device *d, Texture *t) {
+    t->content_hash = tex_fingerprint(t);
+    uint32_t fmt = bc_format(t), bs = TEXFMT_BLOCK_BYTES(fmt);
     size_t total = 0;
     for (uint32_t l = 0; l < t->levels && l < 14; l++)
         total += fmt ? (size_t)((t->lw[l] + 3) / 4) * ((t->lh[l] + 3) / 4) * bs : (size_t)t->lw[l] * t->lh[l] * 4;
@@ -266,6 +356,170 @@ static void sync_texture(Device *d, Texture *t) {
     }
     cmd_end();
     t->sent_version = t->version;
+}
+
+/* ------------------------------------------------------------------ cached vertex buffers
+ * Most of a frame is drawn from vertex buffers that never change after they are filled. Their vertices are
+ * converted once (CVert, or the input registers of a vertex shader run on the GPU) and kept on the GPU, keyed
+ * by the buffers, their versions, offsets, strides and the layout (FVF or shader); draws then send only
+ * indices. Buffers that change after being converted and DrawPrimitiveUP data keep the per-draw path
+ * (D3DUSAGE_DYNAMIC says nothing here: churn is detected instead). Entries not used for a while, or least
+ * recently used ones over the budget, are dropped.
+ * RC_VB_CACHE=0 turns it off; RC_VB_CACHE_MB sets the budget (default 64); RC_VB_CACHE_AB=N alternates it
+ * on and off every N frames (to compare screenshots of a paused game). */
+
+#define VBC_MAX_STREAMS 4
+#define VBC_CAP 4096
+#define VBC_BUCKETS 1024
+typedef struct { uint32_t layout, n; struct { uint32_t id, version, stride, offset; } s[VBC_MAX_STREAMS]; } VbKey;
+typedef struct { VbKey k; uint32_t vb_id, bytes, last_frame; int32_t next; } VbEntry;
+static VbEntry g_vbc[VBC_CAP];
+static int32_t g_vbc_bucket[VBC_BUCKETS], g_vbc_free = -1, g_vbc_used;
+static size_t g_vbc_bytes;
+static uint32_t g_vbc_hits, g_vbc_misses, g_vbc_frame;
+/* vertices of uncached draws by reason, for the [vbcache] log */
+enum { VW_UP, VW_CPU_VS, VW_NOBUF, VW_CHANGED, VW_RANGE, VW_OTHER, VW_N };
+static uint64_t g_vbc_why[VW_N];
+
+/* set by an executor that handles CMD_UPLOAD_VB and indexed draws (render_wgpu.c) */
+__attribute__((weak)) int g_gpu_vb_cache;
+
+static uint32_t vbkey_hash(const VbKey *k) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < 2 + 4 * (size_t)k->n; i++) h = (h ^ ((const uint32_t *)k)[i]) * 16777619u;
+    return h % VBC_BUCKETS;
+}
+
+static void vbc_drop(int32_t e) {
+    VbEntry *v = &g_vbc[e];
+    for (int32_t *p = &g_vbc_bucket[vbkey_hash(&v->k)]; *p >= 0; p = &g_vbc[*p].next)
+        if (*p == e) { *p = v->next; break; }
+    CmdDestroy *c = cmd_alloc(CMD_DESTROY_VB, sizeof *c);
+    c->id = v->vb_id;
+    cmd_end();
+    g_vbc_bytes -= v->bytes;
+    v->vb_id = 0;
+    v->next = g_vbc_free;
+    g_vbc_free = e;
+}
+
+/* drops entries unused for 10 s, then least recently used ones (not this frame's) until `need` more fits */
+static void vbc_evict(size_t budget, size_t need) {
+    for (int32_t e = 0; e < g_vbc_used; e++)
+        if (g_vbc[e].vb_id && g_vbc_frame - g_vbc[e].last_frame > 600) vbc_drop(e);
+    while (g_vbc_bytes + need > budget) {
+        int32_t old = -1;
+        for (int32_t e = 0; e < g_vbc_used; e++)
+            if (g_vbc[e].vb_id && g_vbc[e].last_frame != g_vbc_frame && (old < 0 || g_vbc[e].last_frame < g_vbc[old].last_frame)) old = e;
+        if (old < 0) break;
+        vbc_drop(old);
+    }
+}
+
+static size_t g_vbc_budget;
+/* the cache and indexed draws are on (off: every draw sends its vertices expanded, as before them) */
+static int vbc_active(void) {
+    static int enabled = -1, ab;
+    if (enabled < 0) {
+        enabled = g_gpu_vb_cache && (!getenv("RC_VB_CACHE") || atoi(getenv("RC_VB_CACHE")));
+        g_vbc_budget = (size_t)(getenv("RC_VB_CACHE_MB") ? atoi(getenv("RC_VB_CACHE_MB")) : 64) << 20;
+        for (int i = 0; i < VBC_BUCKETS; i++) g_vbc_bucket[i] = -1;
+        /* RC_VB_CACHE_AB=N (checking): on only in every other N-frame period, to compare screenshots */
+        ab = getenv("RC_VB_CACHE_AB") ? atoi(getenv("RC_VB_CACHE_AB")) : 0;
+        fprintf(stderr, "[vbcache] %s\n", enabled ? "on" : "off");
+    }
+    return enabled && !(ab > 0 && (g_vbc_frame / (uint32_t)ab) & 1);
+}
+
+/* the cached GPU buffer holding this draw's vertices (converted now if needed), or 0: use the per-draw path.
+   gpu_in: input registers of a vertex shader run on the GPU (sh set), else fixed function with FVF layout L
+   and stream 0's stride. Indices (idx) are relative to the streams' offsets (Direct3D 9 SetStreamSource). */
+static uint32_t vbc_lookup(Device *d, Shader *sh, int gpu_in, const FvfLayout *L, uint32_t stride, const uint32_t *idx,
+                           uint32_t n) {
+    if (!vbc_active()) return 0;
+    size_t budget = g_vbc_budget;
+    const DevState *st = &d->st;
+    VbKey k;
+    memset(&k, 0, sizeof k);
+    k.layout = st->vs;
+    Buffer *bufs[VBC_MAX_STREAMS];
+    uint32_t streams[VBC_MAX_STREAMS], mask = sh ? vs_stream_mask(sh) : 1, nv = 0xFFFFFFFFu;
+    for (uint32_t s = 0; s < 16; s++) {
+        if (!(mask & (1u << s))) continue;
+        Buffer *b = com_data(st->stream_vb[s]);
+        uint32_t str = sh ? st->stream_stride[s] : stride, off = st->stream_offset[s];
+        if (!b || !str || k.n == VBC_MAX_STREAMS || b->index || off >= b->size) { g_vbc_why[VW_NOBUF] += n; return 0; }
+        if (b->gpu_dynamic) { g_vbc_why[VW_CHANGED] += n; return 0; }
+        if (!b->gpu_id) b->gpu_id = gpu_new_id();
+        k.s[k.n].id = b->gpu_id; k.s[k.n].version = b->version; k.s[k.n].stride = str; k.s[k.n].offset = off;
+        bufs[k.n] = b; streams[k.n++] = s;
+        if ((b->size - off) / str < nv) nv = (b->size - off) / str;
+    }
+    if (!k.n || !nv || nv == 0xFFFFFFFFu) { g_vbc_why[VW_OTHER] += n; return 0; }
+    for (uint32_t i = 0; i < n; i++) if (idx[i] >= nv) { g_vbc_why[VW_RANGE] += n; return 0; }
+
+    uint32_t h = vbkey_hash(&k);
+    for (int32_t e = g_vbc_bucket[h]; e >= 0; e = g_vbc[e].next)
+        if (!memcmp(&g_vbc[e].k, &k, sizeof k)) { g_vbc[e].last_frame = g_vbc_frame; g_vbc_hits++; return g_vbc[e].vb_id; }
+
+    /* a buffer that changed since it was last converted is probably rewritten as the game goes (DYNAMIC
+       usage alone says nothing) */
+    for (uint32_t i = 0; i < k.n; i++) {
+        Buffer *b = bufs[i];
+        if (b->gpu_converted && b->gpu_conv_version != b->version && ++b->gpu_changes >= 3) { b->gpu_dynamic = 1; g_vbc_why[VW_CHANGED] += n; return 0; }
+    }
+    uint32_t vsize = sh ? 16u * (uint32_t)(gpu_in > 0 ? gpu_in : 1) : (uint32_t)sizeof(CVert);
+    if ((uint64_t)nv * vsize > budget / 4) { g_vbc_why[VW_OTHER] += n; return 0; }
+    uint32_t bytes = nv * vsize;
+    vbc_evict(budget, bytes);
+    if (g_vbc_free < 0 && g_vbc_used == VBC_CAP) { g_vbc_why[VW_OTHER] += n; return 0; }
+    g_vbc_misses++;
+    int32_t e = g_vbc_free >= 0 ? g_vbc_free : g_vbc_used++;
+    if (g_vbc_free == e) g_vbc_free = g_vbc[e].next;
+    VbEntry *v = &g_vbc[e];
+    v->k = k; v->vb_id = gpu_new_id(); v->bytes = bytes; v->last_frame = g_vbc_frame;
+    v->next = g_vbc_bucket[h];
+    g_vbc_bucket[h] = e;
+    g_vbc_bytes += bytes;
+    for (uint32_t i = 0; i < k.n; i++) { bufs[i]->gpu_converted = 1; bufs[i]->gpu_conv_version = bufs[i]->version; }
+
+    CmdUploadVb *c = cmd_alloc(CMD_UPLOAD_VB, sizeof *c + bytes);
+    c->id = v->vb_id;
+    c->bytes = bytes;
+    if (sh) {
+        VsStreams vss;
+        memset(&vss, 0, sizeof vss);
+        for (uint32_t i = 0; i < k.n; i++) { vss.data[streams[i]] = HP(bufs[i]->mem) + k.s[i].offset; vss.stride[streams[i]] = k.s[i].stride; }
+        if (gpu_in > 0) vs_fetch_n(sh, &vss, NULL, 0, nv, (float *)(c + 1));
+    } else {
+        const uint8_t *vb = HP(bufs[0]->mem) + k.s[0].offset;
+        CVert *o = (CVert *)(c + 1);
+        for (uint32_t i = 0; i < nv; i++) convert_vertex(vb + (size_t)i * stride, L, &o[i]);
+    }
+    cmd_end();
+    return v->vb_id;
+}
+
+static void vbc_end_frame(void) {
+    g_vbc_frame++;
+    static int ab = -1;
+    if (ab < 0) ab = getenv("RC_VB_CACHE_AB") ? atoi(getenv("RC_VB_CACHE_AB")) : 0;
+    if (ab > 0 && g_vbc_frame % (uint32_t)ab == 0)
+        fprintf(stderr, "[vbcache] A/B: cache %s\n", (g_vbc_frame / (uint32_t)ab) & 1 ? "off" : "on");
+    static int log = -1;
+    if (log < 0) log = getenv("RC_LOG_FPS") != NULL;
+    if (log && g_vbc_frame % 120 == 0) {
+        int32_t live = 0;
+        for (int32_t e = 0; e < g_vbc_used; e++) live += g_vbc[e].vb_id != 0;
+        fprintf(stderr, "[vbcache] %d buffers, %.1f MB; per frame: %.1f cached draws, %.2f conversions; uncached "
+                "vertices: UP %.0f, CPU VS %.0f, no buffer %.0f, changed %.0f, range %.0f, other %.0f\n", live,
+                g_vbc_bytes / 1048576.0, (g_vbc_hits + g_vbc_misses) / 120.0, g_vbc_misses / 120.0,
+                g_vbc_why[VW_UP] / 120.0, g_vbc_why[VW_CPU_VS] / 120.0, g_vbc_why[VW_NOBUF] / 120.0,
+                g_vbc_why[VW_CHANGED] / 120.0, g_vbc_why[VW_RANGE] / 120.0,
+                g_vbc_why[VW_OTHER] / 120.0);
+        g_vbc_hits = g_vbc_misses = 0;
+        memset(g_vbc_why, 0, sizeof g_vbc_why);
+    }
 }
 
 /* ------------------------------------------------------------------ clears */
@@ -333,6 +587,20 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         if (maxd && g_f_drawn >= (uint32_t)maxd) { g_f_drawn++; return; }
     }
     g_f_drawn++;
+    if (sh && !g_cam_seen && st->viewport.w > 600) {   /* the frame's first shader draw is level geometry: c4-c7 its world-view-projection (camera angle, host/dinput.c) */
+        memcpy(g_cam_c, st->vs_const[0], sizeof g_cam_c);
+        g_cam_seen = 1;
+    }
+    {   /* debugging: <game>/../hide.txt "lo hi" drops draws lo..hi of each frame (checked every 30 frames; delete the file to stop) */
+        static uint32_t lo = 1, hi = 0, chk;
+        if (++chk % 2000 == 0) {
+            char hp[4200]; snprintf(hp, sizeof hp, "%s/../hide.txt", g_game_root);
+            FILE *f = fopen(hp, "r");
+            lo = 1; hi = 0;
+            if (f) { if (fscanf(f, "%u %u", &lo, &hi) != 2) { lo = 1; hi = 0; } fclose(f); }
+        }
+        if (g_f_drawn - 1 >= lo && g_f_drawn - 1 <= hi) return;
+    }
     {   /* debugging: RC_SKIP_PS=<hex handle>: drop draws that use that pixel shader */
         static long skip_ps = -1;
         if (skip_ps < 0) skip_ps = getenv("RC_SKIP_PS") ? strtol(getenv("RC_SKIP_PS"), NULL, 16) : 0;
@@ -352,6 +620,11 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
                 t1 ? (t1->type == RT_TEXTURE ? "2d" : "cube") : "-", t1 ? t1->format : 0,
                 st->tss[0][1], st->tss[0][2], st->tss[0][3], st->tss[0][4], st->tss[1][1], st->rs[27], st->rs[19],
                 st->rs[20], st->rs[15], st->rs[60], st->rs[168], st->rs[7], st->rs[14], st->rs[23], st->rs[22], st->rs[52], st->rs[56], st->rs[57], st->rs[53], st->rs[54], st->rs[55], st->rs[59], st->viewport.minz, st->viewport.maxz, st->viewport.x, st->viewport.y, st->viewport.w, st->viewport.h);
+        for (int s = 0; s < 4; s++) {   /* every bound texture: size, format, render target or not, texture transform flags, addressing */
+            Texture *ts = com_data(st->texture[s]);
+            if (ts) fprintf(stderr, "    [tex%d] %ux%u fmt %x usage %x ttff %x addr %u/%u filt %u/%u\n", s, ts->lw[0], ts->lh[0], ts->format, ts->usage,
+                            st->tss[s][24], st->tss[s][13], st->tss[s][14], st->tss[s][16], st->tss[s][17]);
+        }
     }
 
     FvfLayout L;
@@ -390,6 +663,13 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         break;
     default: if (g_snap_detail) fprintf(stderr, "[skip] primitive type %u n %u\n", prim, prim_count); free(idx); return;
     }
+    if (n && vb && (st->vs == 0x1007du || (!(st->vs & 1) && (st->vs & 0xE) == 0x4))) {   /* a 2D (UI) draw */
+        Texture *t = com_data(st->texture[0]);
+        if (t && t->type == RT_TEXTURE && !(t->usage & 1)) {
+            const float *p = (const float *)(vb + (size_t)idx[0] * stride);
+            ui_note(t, p[0], p[1]);
+        }
+    }
 #undef IDX
 
     /* textures first: an upload is its own command and must precede the draw */
@@ -398,11 +678,65 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         if (t && t->type == RT_TEXTURE && !(t->usage & 1)) sync_texture(d, t);
     }
 
-    CmdDraw *c = cmd_alloc(CMD_DRAW, sizeof *c + (size_t)n * sizeof(CVert));
+    /* Vertex shaders run on the GPU (translated to WGSL by vshader.c): here only their input registers are
+       fetched (packed types expanded to float4). RC_CPU_VS=1 runs them on the CPU instead, as do
+       declaration-only (fixed-function) shaders and shaders that can't be decoded. */
+    static int cpu_vs = -1;
+    if (cpu_vs < 0) {
+        cpu_vs = getenv("RC_CPU_VS") && atoi(getenv("RC_CPU_VS"));
+        if (cpu_vs) fprintf(stderr, "[render] vertex shaders run on the CPU (RC_CPU_VS)\n");
+    }
+    int gpu_in = sh && !cpu_vs && !(g_snap_detail && st->vs == g_trace_vs) ? vs_gpu_inputs(sh) : -1;
+    if (sh && gpu_in < 0 && !cpu_vs) {   /* log each shader that stays on the CPU once */
+        static uint32_t logged[64]; static int nlogged;
+        int seen = 0;
+        for (int i = 0; i < nlogged; i++) seen |= logged[i] == st->vs;
+        if (!seen && nlogged < 64) {
+            logged[nlogged++] = st->vs;
+            fprintf(stderr, "[render] vertex shader %x runs on the CPU (%s)\n", st->vs,
+                    vs_is_fixed_function(sh) ? "declaration without a shader" : "not decodable");
+        }
+    }
+    uint32_t vs_stride = gpu_in > 0 ? 16u * (uint32_t)gpu_in : 16u;
+    /* vertices from an unchanging buffer: converted once and kept on the GPU, the draw sends indices */
+    uint32_t vb_id = !vertices_up && (sh ? gpu_in > 0 : vb != NULL) ? vbc_lookup(d, sh, gpu_in, &L, stride, idx, n) : 0;
+    if (vertices_up) g_vbc_why[VW_UP] += n;
+    else if (sh && gpu_in <= 0) g_vbc_why[VW_CPU_VS] += n;
+    /* otherwise indexed meshes convert each referenced vertex once (over the referenced range) rather than
+       once per index, when that sends less */
+    uint32_t vsize = gpu_in >= 0 ? vs_stride : (uint32_t)sizeof(CVert), lo = 0, nv = n, nidx = 0;
+    if (!vb_id && indices && n && (sh ? gpu_in > 0 : 1) && vbc_active()) {
+        uint32_t l = 0xFFFFFFFFu, h = 0;
+        for (uint32_t i = 0; i < n; i++) { if (idx[i] < l) l = idx[i]; if (idx[i] > h) h = idx[i]; }
+        if ((uint64_t)(h - l + 1) * vsize + 4ull * n < (uint64_t)n * vsize) { lo = l; nv = h - l + 1; nidx = n; }
+    }
+    size_t vbytes = (gpu_in >= 0 ? sizeof(float) * 96 * 4 : 0) + (vb_id ? (size_t)n * 4 : (size_t)nv * vsize + (size_t)nidx * 4);
+    CmdDraw *c = cmd_alloc(CMD_DRAW, sizeof *c + vbytes);
     CVert *cv = (CVert *)(c + 1);
-    c->nverts = n;
+    c->nverts = vb_id ? n : nv;
+    c->nidx = nidx;
+    c->vs_stride = gpu_in >= 0 ? vs_stride : 0;
+    c->vb_id = vb_id;
     c->capture_index = g_snap_detail ? (int32_t)(g_f_drawn - 1) : -1;
-    if (sh) {
+    if (vb_id) {
+        float *consts = (float *)(c + 1);
+        if (sh) vs_constants(sh, (const float (*)[4])st->vs_const, (float (*)[4])consts);
+        memcpy(sh ? (void *)(consts + 96 * 4) : (void *)cv, idx, (size_t)n * 4);
+    } else if (sh && gpu_in >= 0) {
+        VsStreams vss;
+        memset(&vss, 0, sizeof vss);
+        if (vertices_up) { vss.data[0] = vertices_up; vss.stride[0] = up_stride; }
+        else
+            for (int s = 0; s < 16; s++) {
+                Buffer *sb = com_data(st->stream_vb[s]);
+                if (sb) { vss.data[s] = HP(sb->mem) + st->stream_offset[s]; vss.stride[s] = st->stream_stride[s]; }
+            }
+        float *consts = (float *)(c + 1);
+        vs_constants(sh, (const float (*)[4])st->vs_const, (float (*)[4])consts);
+        uint8_t *vout = (uint8_t *)(consts + 96 * 4);
+        if (gpu_in) vs_fetch_n(sh, &vss, nidx ? NULL : idx, lo, nv, (float *)vout);   /* (zeroed by cmd_alloc otherwise) */
+        if (nidx) { uint32_t *o = (uint32_t *)(vout + (size_t)nv * vs_stride); for (uint32_t i = 0; i < n; i++) o[i] = idx[i] - lo; }
+    } else if (sh) {
         VsStreams vss;
         memset(&vss, 0, sizeof vss);
         if (vertices_up) { vss.data[0] = vertices_up; vss.stride[0] = up_stride; }
@@ -483,7 +817,8 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         }
         if (use_range) { for (uint32_t i = 0; i < n; i++) cv[i] = tmp[idx[i] - lo]; free(tmp); }
     } else {
-        for (uint32_t i = 0; i < n; i++) convert_vertex(vb + (size_t)idx[i] * stride, &L, &cv[i]);
+        for (uint32_t i = 0; i < nv; i++) convert_vertex(vb + (size_t)(nidx ? lo + i : idx[i]) * stride, &L, &cv[i]);
+        if (nidx) { uint32_t *o = (uint32_t *)(cv + nv); for (uint32_t i = 0; i < n; i++) o[i] = idx[i] - lo; }
     }
     free(idx);
 
@@ -521,6 +856,13 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     }
     unpack_color(st->rs[60], u->tfactor);
     u->misc[0] = (st->rs[24] & 255) / 255.f;
+    {   /* pixel shader 1.x: stages with D3DTTFF_PROJECTED (256) divide their coordinates by the last one (water's screen-space refraction) */
+        uint32_t pj = 0;
+        if (st->ps)
+            for (int s = 0; s < 4; s++)
+                if (st->tss[s][24] & 256) { uint32_t c = st->tss[s][24] & 255; pj |= (c < 2 || c > 4 ? 4u : c) << (3 * s); }
+        u->misc[1] = (float)pj;
+    }
     for (int i = 0; i < 4; i++) u->mat_diffuse[i] = 1.f;
     if (u->flags[3]) {
         /* no normals: lit color is emissive + ambient * material ambient (diffuse lighting needs a normal) */
@@ -547,7 +889,15 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     if (L.pos_type == 0x4) k.cull = 1;  /* keep 2D simple: no culling for pre-transformed vertices */
     /* D3DCULL_CW (2) culls clockwise triangles, which WebGPU front-face CW makes the front: cull modes map straight through
        (swapping them dropped every back-facing surface: sky, sea, ground) */
-    { static int nc = -1; if (nc < 0) nc = getenv("RC_NO_CULL") != NULL; if (nc) k.cull = 1; }   /* debugging */  /* D3D CW/CCW culls back/front with CW front */
+    { static int nc = -1; if (nc < 0) nc = getenv("RC_NO_CULL") != NULL; if (nc) k.cull = 1; }   /* debugging */
+    k.vs = gpu_in >= 0 ? st->vs : 0;
+    if (st->rs[52] && st->depth_stencil) {   /* STENCILENABLE: character shadows are drawn through the stencil buffer */
+        const uint32_t *r = st->rs;
+        k.sten = 1 | (r[56] & 15) << 4 | (r[53] & 15) << 8 | (r[54] & 15) << 12 | (r[55] & 15) << 16 | (r[185] ? 1u : 0u) << 20 |
+                 (r[189] & 15) << 24;
+        k.sten2 = (r[186] & 15) | (r[187] & 15) << 4 | (r[188] & 15) << 8 | (r[58] & 255) << 12 | (r[59] & 255) << 20;
+        c->stencil_ref = r[57] & 255;
+    }
     c->key = k;
     c->vp[0] = (float)st->viewport.x; c->vp[1] = (float)st->viewport.y;
     c->vp[2] = (float)(st->viewport.w ? st->viewport.w : g_tgt_lw);
@@ -576,6 +926,8 @@ static void rec_present_impl(Device *d) {
     cmd_end();
     cmd_flush(1);
     g_target_sent = 0;   /* the executor ends every frame on the back buffer */
+    vbc_end_frame();
+    ui_frame_done(d->frame);
     g_f_drawn = 0;
 #ifdef __EMSCRIPTEN__
     /* Don't run ahead of the display: two frames queued (a slow frame doesn't skip a vsync). Online every

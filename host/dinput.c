@@ -3,6 +3,8 @@
 #include "com.h"
 
 #include <pthread.h>
+#include <math.h>
+#include <unistd.h>
 
 #define W(name) static void name(CPU *c)
 
@@ -92,21 +94,373 @@ static void push(int kind, uint32_t ofs, uint32_t data) {
     }
     pthread_mutex_unlock(&g_di_lock);
 }
+/* Keyboard state as the game's polls see it (GetDeviceState). Key events are queued and handed over in order, at
+   most one new press per poll, and a key's release only after a poll has seen it down: a phone keyboard (or adb)
+   types faster than the game polls (~17-60 times a second), and a press and release between two polls, or several
+   keys down in one poll, lose letters (typing "Prince" in the profile box gave "P"). */
+static struct { uint8_t dik, down; } g_kq[512];
+static int g_kq_head, g_kq_tail;
+static uint8_t g_kvis[256], g_kseen[256];   /* visible state; set once a poll has reported the key down */
 void dinput_key(uint8_t dik, int down) {
     g_dik[dik] = (uint8_t)down;
     if (down) g_dik_down_at[dik] = host_seconds();
+    pthread_mutex_lock(&g_di_lock);
+    int next = (g_kq_tail + 1) % 512;
+    if (next != g_kq_head) { g_kq[g_kq_tail].dik = dik; g_kq[g_kq_tail].down = (uint8_t)down; g_kq_tail = next; }
+    pthread_mutex_unlock(&g_di_lock);
     push(1, dik, down ? 0x80 : 0);
+}
+/* one keyboard poll: apply queued events up to the next press that needs a poll of its own */
+static void kq_poll(void) {
+    pthread_mutex_lock(&g_di_lock);
+    int pressed = 0;
+    while (g_kq_head != g_kq_tail) {
+        uint8_t dik = g_kq[g_kq_head].dik, down = g_kq[g_kq_head].down;
+        if (down) {
+            if (pressed || (g_kvis[dik] && !g_kseen[dik])) break;   /* already one new press this poll */
+            g_kvis[dik] = 1; g_kseen[dik] = 0; pressed = 1;
+        } else {
+            if (g_kvis[dik] && !g_kseen[dik]) break;   /* pressed but no poll has reported it yet */
+            g_kvis[dik] = 0;
+        }
+        g_kq_head = (g_kq_head + 1) % 512;
+    }
+    for (int i = 0; i < 256; i++) if (g_kvis[i]) g_kseen[i] = 1;
+    pthread_mutex_unlock(&g_di_lock);
 }
 void dinput_mouse_button(int b, int down) {
     if (down) { g_mouse_buttons |= 1 << b; if (b < 4) g_button_down_at[b] = host_seconds(); }
     else g_mouse_buttons &= ~(1 << b);
     push(2, 12u + (uint32_t)b, down ? 0x80 : 0);
 }
-void dinput_mouse_move(int dx, int dy) {
+static void mouse_deliver(int dx, int dy) {
     g_mouse_dx += dx; g_mouse_dy += dy;
     if (dx) push(2, 0, (uint32_t)dx);
     if (dy) push(2, 4, (uint32_t)dy);
 }
+#ifdef __ANDROID__
+/* Touch drags arrive in bursts at the display's rate (90 Hz on the Galaxy A17) while the game reads the mouse ~40
+   times a second, so each game frame got two or three bursts' worth: the camera speed jumped from frame to frame.
+   Motion is collected here and handed out at each read in proportion to the time since the previous read
+   (exponential easing, MOUSE_TAU), so equal finger speed gives equal camera speed.
+
+   Two Thrones turns each buffered mouse event into camera input as x = trunc(x - dx * speed * 1.1) (FUN_004305c0;
+   y the same with +), speed being the Mouse speed option (FUN_0042aa90: [0xa038a4] + [0x98108c]). With speed * 1.1
+   below 1 every small event is truncated to nothing: slow swipes barely turned the camera and fast ones did, which
+   felt stiff. So motion is kept in the game's own units here, fractions carried over, and each read sends the event
+   that the game's truncation turns into exactly the whole units owed. */
+#define MOUSE_TAU 0.03
+static double g_mpend_x, g_mpend_y, g_mlast, g_gx, g_gy;
+static pthread_mutex_t g_mlock = PTHREAD_MUTEX_INITIALIZER;
+void dinput_mouse_move(int dx, int dy) {
+    pthread_mutex_lock(&g_mlock);
+    g_mpend_x += dx; g_mpend_y += dy;
+    pthread_mutex_unlock(&g_mlock);
+}
+/* the game's factor from mouse counts to camera units (0: not Two Thrones, or not set up yet) */
+static float game_mouse_scale(void) {
+    float k = (RF32(0xa038a4u) + RF32(0x98108cu)) * RF32(0x980810u);
+    if (!(k > 0.01f && k < 50.f) || RF32(0x980810u) != 1.1f) return 0;
+    static float logged;
+    if (k != logged) { logged = k; fprintf(stderr, "[dinput] game mouse scale %.3f (Mouse speed option %.3f)\n", k, RF32(0xa038a4u)); }
+    return k;
+}
+/* the event the game truncates to exactly u units: the smallest count whose scaled value reaches |u| */
+static int count_for(int u, float k) {
+    if (!u) return 0;
+    int a = u < 0 ? -u : u;
+    int r = (int)ceil((a + 0.002) / k);
+    while (r > 1 && (r - 1) * (double)k >= a + 0.002) r--;
+    while (r * (double)k < a + 0.002) r++;
+    return u < 0 ? -r : r;
+}
+/* debugging (measuring the camera's response): <game>/../mtest.txt holding "units frames" makes the next
+   reads send exactly that many camera units each (X axis), touch motion ignored meanwhile */
+static int mtest_step(int *dx, int *dy) {
+    static int units, frames, axis;
+    static double last_check;
+    if (!frames && host_seconds() - last_check > 0.5) {
+        last_check = host_seconds();
+        char path[4200];
+        snprintf(path, sizeof path, "%s/../mtest.txt", g_game_root);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            axis = 0;
+            if (fscanf(f, "%d %d %d", &units, &frames, &axis) < 2) frames = 0;
+            fclose(f); remove(path);
+            fprintf(stderr, "[mtest] %d units x %d frames\n", units, frames);
+        }
+    }
+    if (!frames) return 0;
+    frames--;
+    float k = game_mouse_scale();
+    int r = k > 0 ? count_for(units, k) : units;
+    *dx = axis ? 0 : r; *dy = axis ? r : 0;
+    return 1;
+}
+/* In play the game reads the mouse like a stick: per frame its camera takes v = x * (speed * 4.5 + 0.5) / 50
+   (y: y * (speed + 1) / 20) as a turning rate, and measured on the phone (RC mtest hook above, screen recordings)
+   nothing turns below v ~0.47 and the rate is at its maximum from ~0.7: a narrow on/off band, so a drag either did
+   nothing or spun the camera. Here finger motion becomes the turn wanted this frame, as a fraction of the maximum
+   rate, sent as the v inside that band that gives it; more than the maximum carries over to the next frames, so a
+   fast flick still turns as far as the finger went. RC_CAM="dead_x,full_x,dead_y,full_y,gain_x,gain_y" tunes it. */
+static float g_cam[6] = { 0.47f, 0.70f, 0.47f, 0.70f, 0.11f, 0.11f };
+static double g_qx, g_qy;   /* turn owed, in fractions of a frame at the maximum rate */
+static int band_units(double *q, float dead, float full, float per_unit) {
+    double s = *q > 1 ? 1 : *q < -1 ? -1 : *q;
+    if (fabs(s) < 0.03) return 0;   /* too little for a frame yet: wait for more */
+    *q -= s;
+    double v = dead + fabs(s) * (full - dead);
+    int u = (int)ceil(v / per_unit);
+    return s < 0 ? -u : u;
+}
+/* Finger-follow turning: the camera's actual heading is read from the game's view matrix every frame
+   (render_rec.c camera_constants: c8-c10 are the camera's axes, Z up), so a drag sets a target heading and each
+   mouse read sends the turn rate that brings the camera there, braking early for the camera's own easing
+   (it lags the input by several frames). The finger moves the view by a fixed angle per distance, it stops
+   when the finger stops, and auto-follow resumes once the target is reached and the finger rests.
+   Measured on the phone (Mouse speed option 0.44): units 10 turn ~0.3 deg/frame, 12 ~0.9, 13 ~2.2, 15+ ~2.45
+   (the maximum); positive units raise the heading. Rates between levels are dithered (sigma-delta).
+   RC_CAMF="gain,lag,deg_per_count" tunes it; RC_CAMF=off restores the rate band alone.
+   If the heading doesn't respond (fixed-camera rooms) it hands back to the band mapping for a while. */
+static float g_camf[3] = { 0.4f, 0.f, 0.22f };   /* tuned live 2026-11-15: no lag term (the camera answers within a read) */
+static int g_yf_on = -1, g_yf_act, g_yf_stall;
+static double g_yf_target, g_yf_prev, g_yf_motion_t, g_yf_off_until, g_yf_sd;
+static double wrap180(double a) { a = fmod(a + 180.0, 360.0); if (a < 0) a += 360.0; return a - 180.0; }
+/* tuning on the phone without restarting, files next to game/ (each read every 0.5 s):
+   camf.txt "gain lag deg" or "off" (deleted once read); camlog.txt present = log every read as [yf];
+   ftest.txt "counts reads" = a fake swipe: that many mouse counts added on each of the next reads */
+/* rate curve: deg per read against camera value v (camlv.txt "v r v r ..." replaces it; r rising) */
+static float g_lv_v[16] = { 0.53f, 0.54f, 0.56f, 0.58f, 0.60f, 0.62f, 0.68f, 0.72f, 0.80f },   /* measured, speed option 0 */
+            g_lv_r[16] = { 0.f, 0.3f, 0.43f, 0.67f, 0.85f, 1.06f, 1.65f, 2.21f, 2.6f };
+static int g_lv_n = 9;
+static float g_force_sp = 0.f;   /* the Mouse speed option forced to this (fine input steps); speedopt.txt "x" changes it, -1 = leave */
+static int g_yf_log, g_ft_reads, g_yf_direct = 0;   /* direct heading writes: off (the matrix found was the Prince's facing) */
+static float g_ft_counts;
+#define YM_MAX 8
+static uint32_t g_ym[YM_MAX];   /* the yaw matrix matches (ym_search below) */
+static int g_ym_n;
+static void ym_search(double yaw);
+static void yf_poll(void) {
+    static double last;
+    double now = host_seconds();
+    if (now - last < 0.5) return;
+    last = now;
+    char p[4200];
+    FILE *f;
+    snprintf(p, sizeof p, "%s/../camf.txt", g_game_root);
+    if ((f = fopen(p, "r"))) {
+        char w[64] = "";
+        if (fgets(w, sizeof w, f)) {
+            if (!strncmp(w, "off", 3)) g_yf_on = 0;
+            else { g_yf_on = 1; sscanf(w, "%f %f %f", &g_camf[0], &g_camf[1], &g_camf[2]); }
+        }
+        fclose(f); remove(p);
+        fprintf(stderr, "[yf] on %d gain %g lag %g deg %g\n", g_yf_on, g_camf[0], g_camf[1], g_camf[2]);
+    }
+    snprintf(p, sizeof p, "%s/../camlv.txt", g_game_root);
+    if ((f = fopen(p, "r"))) {
+        int n = 0;
+        while (n < 16 && fscanf(f, "%f %f", &g_lv_v[n], &g_lv_r[n]) == 2) n++;
+        if (n >= 2) g_lv_n = n;
+        fclose(f); remove(p);
+        fprintf(stderr, "[yf] rate curve: %d points\n", g_lv_n);
+    }
+    snprintf(p, sizeof p, "%s/../speedopt.txt", g_game_root);
+    if ((f = fopen(p, "r"))) { if (fscanf(f, "%f", &g_force_sp) != 1) g_force_sp = -1; fclose(f); remove(p); fprintf(stderr, "[yf] speed option forced to %g\n", g_force_sp); }
+    snprintf(p, sizeof p, "%s/../directcam.txt", g_game_root);
+    if ((f = fopen(p, "r"))) { if (fscanf(f, "%d", &g_yf_direct) != 1) g_yf_direct = 1; fclose(f); remove(p); fprintf(stderr, "[yf] direct %d\n", g_yf_direct); }
+    snprintf(p, sizeof p, "%s/../ymtest.txt", g_game_root);
+    if ((f = fopen(p, "r"))) {   /* "search" or "<index> <deg>": rotate one yaw-matrix match (finding which is the camera) */
+        char w[32] = ""; int idx = -1; float deg = 0;
+        if (fgets(w, sizeof w, f)) { if (!strncmp(w, "search", 6)) ym_search(g_yf_prev); else if (sscanf(w, "%d %f", &idx, &deg) == 2 && idx >= 0 && idx < g_ym_n) {
+            float *m = (float *)HP(g_ym[idx]); double t = atan2(-m[0], m[1]) + deg * (M_PI / 180.0);
+            m[0] = -(float)sin(t); m[1] = (float)cos(t); m[4] = -(float)cos(t); m[5] = -(float)sin(t);
+            fprintf(stderr, "[yf] rotated match %d (%08x) by %g\n", idx, g_ym[idx], deg); } }
+        fclose(f); remove(p);
+    }
+    snprintf(p, sizeof p, "%s/../camlog.txt", g_game_root);
+    g_yf_log = access(p, F_OK) == 0;
+    snprintf(p, sizeof p, "%s/../ftest.txt", g_game_root);
+    if ((f = fopen(p, "r"))) {
+        if (fscanf(f, "%f %d", &g_ft_counts, &g_ft_reads) != 2) g_ft_reads = 0;
+        fclose(f); remove(p);
+        fprintf(stderr, "[yf] fake swipe %g counts x %d reads\n", g_ft_counts, g_ft_reads);
+    }
+}
+/* The camera's yaw matrix in the game's heap (found with host/memscan.c, 2026-11-16): four rows of 4 floats,
+   (-sin y, cos y, 0, 0), (-cos y, -sin y, 0, 0), (0, 0, 1, 0), (camera position, 1), y being the heading read from
+   the view (yaw_follow). Writing it turns the camera at once and the game carries on from there, so a drag sets
+   the heading directly. It moves between sessions and levels, so it is found by matching the current heading
+   (every match is written: copies are recomputed from it each frame anyway). directcam.txt "0"/"1" toggles it. */
+static double g_ym_search_t, g_ym_written = 1e9;
+static int ym_angle(uint32_t a, double *deg) {
+    const float *m = (const float *)HP(a);
+    if (m[2] != 0 || m[3] != 0 || m[6] != 0 || m[7] != 0 || m[8] != 0 || m[9] != 0 || m[10] != 1.f || m[11] != 0 || m[15] != 1.f) return 0;
+    if (fabsf(m[4] + m[1]) > 1e-3f || fabsf(m[5] - m[0]) > 1e-3f || fabsf(m[0] * m[0] + m[1] * m[1] - 1.f) > 1e-3f) return 0;
+    *deg = atan2(-m[0], m[1]) * (180.0 / M_PI);
+    return 1;
+}
+static void ym_search(double yaw) {
+    extern void guest_mem_ranges(uint32_t r[4]);
+    uint32_t r[4];
+    guest_mem_ranges(r);
+    g_ym_n = 0;
+    double t0 = host_seconds();
+    for (int k = 0; k < 2; k++)
+        for (uint32_t a = (r[2 * k] + 15) & ~15u; a + 64 <= r[2 * k + 1] && g_ym_n < YM_MAX; a += 16) {
+            const float *m = (const float *)HP(a);
+            if (m[10] != 1.f || m[8] != 0 || m[15] != 1.f) continue;
+            double d;
+            if (ym_angle(a, &d) && fabs(wrap180(d - yaw)) < 1.0) g_ym[g_ym_n++] = a;
+        }
+    fprintf(stderr, "[yf] yaw matrix search: %d found in %.0f ms%s%08x\n", g_ym_n, (host_seconds() - t0) * 1e3, g_ym_n ? ", first " : "", g_ym_n ? g_ym[0] : 0);
+    for (int i = 0; i < g_ym_n; i++) { const float *m = (const float *)HP(g_ym[i]); fprintf(stderr, "[yf]   %d: %08x pos %.1f %.1f %.1f\n", i, g_ym[i], m[12], m[13], m[14]); }
+}
+static int yaw_matrix_write(double yaw, double target) {
+    int ok = 0;
+    for (int i = 0; i < g_ym_n; i++) {   /* still there: showing the heading, or what was written last */
+        double d;
+        if (ym_angle(g_ym[i], &d) && (fabs(wrap180(d - yaw)) < 3.0 || fabs(wrap180(d - g_ym_written)) < 3.0)) ok = 1;
+    }
+    if (!ok) {
+        if (host_seconds() - g_ym_search_t < 1.0) return 0;
+        g_ym_search_t = host_seconds();
+        ym_search(yaw);
+        if (!g_ym_n) return 0;
+    }
+    float s = (float)sin(target * (M_PI / 180.0)), c = (float)cos(target * (M_PI / 180.0));
+    for (int i = 0; i < g_ym_n; i++) {
+        float *m = (float *)HP(g_ym[i]);
+        m[0] = -s; m[1] = c; m[4] = -c; m[5] = -s;
+    }
+    g_ym_written = target;
+    return 1;
+}
+static int yaw_follow(double rx, int *ux) {
+    if (g_yf_on < 0) {
+        const char *e = getenv("RC_CAMF");
+        g_yf_on = !(e && !strcmp(e, "off"));
+        if (e && g_yf_on) sscanf(e, "%f,%f,%f", &g_camf[0], &g_camf[1], &g_camf[2]);
+    }
+    yf_poll();
+    *ux = 0;
+    extern int camera_constants(float out[12][4]);
+    float c[12][4];
+    camera_constants(c);
+    if (c[10][0] == 0 && c[10][1] == 0) return 0;
+    double yaw = atan2(c[10][1], c[10][0]) * (180.0 / M_PI);
+    double vel = wrap180(yaw - g_yf_prev);
+    g_yf_prev = yaw;
+    if (!g_yf_on) return 0;
+    double now = host_seconds();
+    if (now < g_yf_off_until) { g_yf_act = 0; return 0; }
+    if (rx != 0) {
+        if (!g_yf_act) { g_yf_act = 1; g_yf_target = yaw; g_yf_stall = 0; g_yf_sd = 0; }
+        g_yf_target += rx * g_camf[2];
+        g_yf_motion_t = now;
+    }
+    if (!g_yf_act) return 1;
+    if (g_yf_direct && yaw_matrix_write(yaw, g_yf_target)) {   /* the heading itself is set: flicks land at once */
+        *ux = 0;
+        if (now - g_yf_motion_t > 0.15) g_yf_act = 0;   /* finger resting: the game's camera carries on from here */
+        return 1;
+    }
+    double err = wrap180(g_yf_target - yaw);
+    if (err > 90) { g_yf_target = yaw + 90; err = 90; }   /* never more than a quarter turn behind the finger */
+    if (err < -90) { g_yf_target = yaw - 90; err = -90; }
+    double rest = now - g_yf_motion_t;
+    if ((rest > 0.12 && fabs(err) < 1.0 && fabs(vel) < 0.3) || rest > 1.5) { g_yf_act = 0; return 1; }   /* there: let go */
+    double want = g_camf[0] * (err - vel * g_camf[1]);   /* deg/frame, braking for the camera's lag */
+    /* the camera value v (x * (speed * 4.5 + 0.5) / 50) giving that rate: the measured curve, interpolated */
+    double a = fabs(want);
+    if (a < 0.05) a = 0;
+    double v = 0;
+    if (a > 0) {
+        int i = 1;
+        while (i < g_lv_n - 1 && g_lv_r[i] < a) i++;
+        double t = (a - g_lv_r[i - 1]) / (g_lv_r[i] - g_lv_r[i - 1]);
+        if (t > 1) t = 1;
+        if (t < 0) t = 0;
+        v = g_lv_v[i - 1] + t * (g_lv_v[i] - g_lv_v[i - 1]);
+    }
+    float sp = RF32(0xa038a4u);
+    double uf = v / ((sp * 4.5 + 0.5) / 50.0);
+    g_yf_sd += uf - floor(uf);   /* whole units only: carry the fraction (fine steps with the speed option at 0) */
+    int u = (int)floor(uf);
+    if (g_yf_sd >= 1) { g_yf_sd -= 1; u++; }
+    if (v == 0) u = 0;
+    /* a camera that doesn't turn while being pushed is fixed here: give the drag back to the old mapping for 2 s */
+    if (a > 1.0 && fabs(vel) < 0.05) { if (++g_yf_stall > 25) { g_yf_off_until = now + 2.0; g_yf_act = 0; return 0; } }
+    else if (fabs(vel) > 0.2) g_yf_stall = 0;
+    *ux = want < 0 ? -u : u;
+    return 1;
+}
+
+static void camera_units(double rx, double ry, float k, int *dx, int *dy) {
+    static int init;
+    if (!init) {
+        init = 1;
+        const char *e = getenv("RC_CAM");
+        if (e) sscanf(e, "%f,%f,%f,%f,%f,%f", &g_cam[0], &g_cam[1], &g_cam[2], &g_cam[3], &g_cam[4], &g_cam[5]);
+    }
+    float sp = RF32(0xa038a4u);
+    int ux;
+    if (g_force_sp >= 0 && RF32(0xa038a4u) != g_force_sp) memcpy(g_mem + 0xa038a4u, &g_force_sp, 4);   /* fine input steps */
+    if (g_ft_reads > 0) { rx += g_ft_counts; g_ft_reads--; }   /* fake swipe (yf_poll) */
+    int follow = yaw_follow(rx, &ux);
+    if (follow) g_qx = 0;   /* the camera's angle follows the finger (above) */
+    else {
+        g_qx += rx * g_cam[4];
+        ux = band_units(&g_qx, g_cam[0], g_cam[1], (sp * 4.5f + 0.5f) / 50.f);
+    }
+    if (g_yf_log) fprintf(stderr, "[yf] %.3f rx %.1f yaw %.2f tgt %.2f act %d follow %d ux %d\n", host_seconds(), rx, g_yf_prev, g_yf_target, g_yf_act, follow, ux);
+    g_qy += ry * g_cam[5];
+    int uy = band_units(&g_qy, g_cam[2], g_cam[3], (sp + 1.f) / 20.f);
+    *dx = count_for(ux, k); *dy = count_for(uy, k);
+    g_gx = g_gy = 0;
+}
+
+static void mouse_release(void) {
+    {
+        int tdx, tdy, on = mtest_step(&tdx, &tdy);
+        if (g_yf_log) {   /* the heading at every read, for step responses */
+            extern int camera_constants(float out[12][4]);
+            float c[12][4];
+            camera_constants(c);
+            fprintf(stderr, "[yfm] %.3f yaw %.2f mtest %d\n", host_seconds(), atan2(c[10][1], c[10][0]) * (180.0 / M_PI), on ? tdx : 0);
+        }
+        if (on) { mouse_deliver(tdx, tdy); return; }
+    }
+    pthread_mutex_lock(&g_mlock);
+    double now = host_seconds(), dt = g_mlast ? now - g_mlast : 0.03;
+    g_mlast = now;
+    double f = dt > 0.2 ? 1.0 : 1.0 - exp(-dt / MOUSE_TAU);
+    double rx = g_mpend_x * f, ry = g_mpend_y * f;
+    if (fabs(g_mpend_x) < 0.5 && fabs(g_mpend_y) < 0.5) rx = g_mpend_x, ry = g_mpend_y;   /* the tail */
+    g_mpend_x -= rx; g_mpend_y -= ry;
+    int dx, dy;
+    float k = game_mouse_scale();
+    extern int gamephase_current(void);
+    if (k > 0 && gamephase_current() == 0) camera_units(rx, ry, k, &dx, &dy);
+    else if (k > 0) {
+        g_qx = g_qy = 0;
+        g_gx += rx * k; g_gy += ry * k;
+        int ux = (int)g_gx, uy = (int)g_gy;   /* whole units, toward zero; the rest waits */
+        g_gx -= ux; g_gy -= uy;
+        dx = count_for(ux, k); dy = count_for(uy, k);
+    } else {
+        g_gx += rx; g_gy += ry;
+        dx = (int)g_gx; dy = (int)g_gy;
+        g_gx -= dx; g_gy -= dy;
+    }
+    pthread_mutex_unlock(&g_mlock);
+    if (dx || dy) mouse_deliver(dx, dy);
+}
+#else
+void dinput_mouse_move(int dx, int dy) { mouse_deliver(dx, dy); }
+static void mouse_release(void) {}
+#endif
 
 static ComInterface IDirectInputDevice_i;
 
@@ -259,12 +613,17 @@ W(dev_GetDeviceState) {
     uint32_t n = ARG(1), p = ARG(2);
     memset(HP(p), 0, n);
     if (d && d->kind == DEV_KEYBOARD) {
-        double now = host_seconds();
-        for (uint32_t i = 0; i < n && i < 256; i++)
-            W8(p + i, g_dik[i] || now - g_dik_down_at[i] < MIN_HOLD ? 0x80 : 0);
+        if (deterministic()) {   /* deterministic runs: state is exactly what was pressed */
+            for (uint32_t i = 0; i < n && i < 256; i++) W8(p + i, g_dik[i] ? 0x80 : 0);
+        } else {
+            kq_poll();
+            for (uint32_t i = 0; i < n && i < 256; i++) W8(p + i, g_kvis[i] ? 0x80 : 0);
+        }
     } else if (d && d->kind == DEV_JOYSTICK) {
         pad_write_state(d, p, n);
     } else if (d && d->kind == DEV_MOUSE && n >= 16) {
+        mouse_release();
+        { static int k; if (k++ < 3) fprintf(stderr, "[dinput] mouse GetDeviceState from %08x into %08x\n", R32(c->esp), p); }
         W32(p, (uint32_t)g_mouse_dx); W32(p + 4, (uint32_t)g_mouse_dy);
         g_mouse_dx = g_mouse_dy = 0;
         double now = host_seconds();
@@ -278,6 +637,8 @@ W(dev_GetDeviceData) {
     { static int n; if (n++ < 2) LOG("[dinput] GetDeviceData(%s)\n", d && d->kind == DEV_KEYBOARD ? "keyboard" : "mouse"); }
     uint32_t size = ARG(1), out = ARG(2), pn = ARG(3), peek = ARG(4) & 1;
     int kind = d ? d->kind : 0;
+    if (kind == DEV_MOUSE && !peek) mouse_release();
+    if (kind == DEV_MOUSE) { static int k; if (k++ < 3) fprintf(stderr, "[dinput] mouse GetDeviceData from %08x into %08x size %u\n", R32(c->esp), out, size); }
     uint32_t max = pn ? R32(pn) : 0, n = 0;
     pthread_mutex_lock(&g_di_lock);
     int h = g_qhead[kind];

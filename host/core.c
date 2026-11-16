@@ -1,6 +1,6 @@
 /* Host services shared by the Windows API layer: guest heap, handles, path mapping, time. */
 #include "win32.h"
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)   /* bionic has execinfo.h only from API 33 */
 #include <execinfo.h>
 #else
 static int backtrace(void **b, int n) { (void)b; (void)n; return 0; }
@@ -15,7 +15,7 @@ static void backtrace_symbols_fd(void *const *b, int n, int fd) { (void)b; (void
 #include <unistd.h>
 
 int g_log;
-char g_game_root[1024];
+char g_game_root[4096];   /* PATH_MAX: bionic's fortified realpath() insists */
 char g_user_root[1024];
 
 /* ------------------------------------------------------------------ guest heap
@@ -205,9 +205,15 @@ uint32_t host_language_override(uint32_t game_choice) {
     for (uint32_t i = 0; i < 5; i++) if (!strcasecmp(l, names[i])) return i;
     return game_choice;
 }
-/* the video size the game starts with (RC_RESOLUTION=WxH, default 1920x1080; 800x600 is what the game ships with) */
+/* the video size the game starts with (RC_RESOLUTION=WxH, default 1920x1080; 800x600 is what the game ships with).
+   Android: 960x540, the size of the phone's swap chain (RC_RENDER_HEIGHT, render_wgpu.c). Phone GPUs run out of
+   pixel throughput (Galaxy A17 main menu: ~12.5 fps at 1080p, ~17 at 720p; level 1: ~24 at 720p, ~32 at 540p). */
 static void video_size(uint32_t *w, uint32_t *h) {
+#ifdef __ANDROID__
+    unsigned a = 960, b = 540;   /* level 1 on the Galaxy A17: ~24 fps at 720p (GPU fill bound), ~32 fps at 540p */
+#else
     unsigned a = 1920, b = 1080;
+#endif
     const char *r = getenv("RC_RESOLUTION");
     if (r && sscanf(r, "%ux%u", &a, &b) != 2) { a = 800; b = 600; }
     *w = a; *h = b;

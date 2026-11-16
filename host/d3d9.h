@@ -27,6 +27,7 @@ typedef struct Texture {
     uint32_t version;             /* bumped on every unlock: backends re-upload when it changes */
     uint32_t gpu_id;              /* renderer's name for it (stable, never reused) */
     uint32_t sent_version;        /* version last sent to the renderer */
+    uint32_t content_hash;        /* fingerprint of level 0 at the last upload (render_rec.c), 0 = none */
     void *backend;
 } Texture;
 
@@ -45,8 +46,12 @@ typedef struct Buffer {
     int index;                    /* index buffer? */
     uint32_t size, usage, pool, fvf_or_format;
     uint32_t mem;
-    uint32_t version;
+    uint32_t version;             /* bumped on every unlock */
     void *backend;
+    /* renderer: converted copies of a vertex buffer are cached on the GPU while it doesn't change */
+    uint32_t gpu_id;              /* renderer's name for it (0: not yet named) */
+    uint32_t gpu_conv_version;    /* version last converted (valid when gpu_converted) */
+    uint8_t gpu_converted, gpu_changes, gpu_dynamic;   /* changed after conversion this often: don't cache */
 } Buffer;
 
 typedef struct Shader {
@@ -56,6 +61,7 @@ typedef struct Shader {
     void *backend;
     uint32_t handle;                      /* odd table handle (shader_get) */
     uint32_t *elems; uint32_t n_elems;    /* vertex declarations: the D3DVERTEXELEMENT9 array as given (8 bytes each) */
+    void *gpu;                            /* renderer: a vertex shader's GPU translation (render_wgpu.c) */
 } Shader;
 
 #define MAX_TS 512

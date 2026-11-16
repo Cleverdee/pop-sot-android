@@ -376,7 +376,12 @@ static void state_hash_tick(uint32_t frame) {
 static void frame_limit(void) {
     extern double host_seconds(void);
     static double next, period;
-    if (period == 0) { const char *e = getenv("RC_FPS"); double f = e ? atof(e) : 30.0; period = f > 1 ? 1.0 / f : -1; }
+#ifdef __ANDROID__
+    const double default_fps = 60.0;   /* phones: the cap only bites in light scenes (Galaxy A17 level 1: ~32 fps at 540p) */
+#else
+    const double default_fps = 30.0;
+#endif
+    if (period == 0) { const char *e = getenv("RC_FPS"); double f = e ? atof(e) : default_fps; period = f > 1 ? 1.0 / f : -1; }
     if (period < 0) return;
     double now = host_seconds();
     if (next == 0) next = now;
@@ -385,9 +390,11 @@ static void frame_limit(void) {
     if (next > now) usleep((useconds_t)((next - now) * 1e6));
 }
 
+volatile uint32_t g_present_frames;   /* frames presented so far (the Android key pacer in input.c waits on it) */
 W(dev_Present) {
     Device *d = dev(c);
     d->frame++;
+    __atomic_add_fetch(&g_present_frames, 1, __ATOMIC_RELEASE);
     extern void input_script_tick(uint32_t frame);
     extern void dump_tick(uint32_t frame);
     input_script_tick(d->frame);
@@ -406,13 +413,38 @@ W(dev_Present) {
     static int fps_log = -1;
     if (fps_log < 0) fps_log = getenv("RC_LOG_FPS") != NULL;
     double now = host_seconds();
+    static double prev_t, max_dt; static uint32_t hitches;
+    extern double g_hx[8]; extern uint32_t g_hxb[8];   /* frame-time spikes since the last [fps] line */
+    extern double g_prof_draw, g_prof_present;
+    static double pd_h, pp_h;
+    if (prev_t) {
+        double dt = now - prev_t;
+        if (dt > max_dt) max_dt = dt;
+        if (dt > 0.05) {
+            hitches++;
+            if (fps_log) fprintf(stderr, "[hitchx] frame %u %.0f ms (%u draws): recording draws %.1f ms, present %.1f ms; file %.1f ms (%u KB), tex sync %.1f ms (%u KB rgba), tex upload %.1f ms, "
+                                 "pipelines %u in %.1f ms, shaders %u in %.1f ms, present wait %.1f ms\n", d->frame, dt * 1e3, d->draws_this_frame,
+                                 (g_prof_draw - pd_h) * 1e3, (g_prof_present - pp_h) * 1e3, g_hx[0] * 1e3, g_hxb[0] >> 10,
+                                 g_hx[1] * 1e3, g_hxb[1] >> 10, g_hx[2] * 1e3, g_hxb[3], g_hx[3] * 1e3, g_hxb[4], g_hx[4] * 1e3, g_hx[5] * 1e3);
+        }
+    }
+    pd_h = g_prof_draw; pp_h = g_prof_present;
+    memset(g_hx, 0, sizeof g_hx); memset(g_hxb, 0, sizeof g_hxb);
+    prev_t = now;
     if (fps_log && now - last_t >= 2.0) {
+        extern float g_view_m[16];
+        if (last_t) fprintf(stderr, "[view] fwd %.3f %.3f %.3f  right %.3f %.3f %.3f  pos-ish %.1f %.1f %.1f\n", g_view_m[2], g_view_m[6], g_view_m[10],
+                            g_view_m[0], g_view_m[4], g_view_m[8], g_view_m[12], g_view_m[13], g_view_m[14]);
+        if (last_t) fprintf(stderr, "[hitch] longest frame %.1f ms, %u frames over 50 ms\n", max_dt * 1e3, hitches);
+        max_dt = 0; hitches = 0;
         extern double g_prof_draw, g_prof_present; extern uint64_t g_prof_verts, g_prof_draws_vs;
         static double pd, pp;
         if (last_t) fprintf(stderr, "[fps] %.1f  (frame %u, %u draws in the last frame; per frame: draws %.1f ms, present %.1f ms, %llu verts in %llu vs-draws total)\n",
                             (d->frame - last_f) / (now - last_t), d->frame, d->draws_this_frame,
                             1e3 * (g_prof_draw - pd) / (d->frame - last_f), 1e3 * (g_prof_present - pp) / (d->frame - last_f), (unsigned long long)g_prof_verts, (unsigned long long)g_prof_draws_vs);
         pd = g_prof_draw; pp = g_prof_present;
+        extern void gpu_stats_log(double secs, uint32_t frames) __attribute__((weak));
+        if (last_t && gpu_stats_log) gpu_stats_log(now - last_t, d->frame - last_f);
         extern void guest_mem_stats(uint32_t *, uint32_t *);
         uint32_t hu, vu;
         guest_mem_stats(&hu, &vu);
@@ -444,6 +476,7 @@ W(dev_GetGammaRamp) {
 }
 W(dev_GetSwapChain) { RET(3, D3DERR_INVALIDCALL); }
 W(dev_GetNumberOfSwapChains) { RET(1, 1); }
+double g_hx[8]; uint32_t g_hxb[8];   /* per-frame cost of loading work, for [hitchx] (RC_LOG_FPS) */
 W(dev_CreateTexture) {   /* (w, h, levels, usage, fmt, pool, out, shared) */
     W32(ARG(7), create_texture(ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), ARG(6), 0));
     RET(9, S_OK);
@@ -570,10 +603,10 @@ static void stretch_by_draw(Device *d, uint32_t src_obj, Surface *src, uint32_t 
     rs[7] = 0; rs[14] = 0; rs[27] = 0; rs[15] = 0; rs[22] = 1; rs[137] = 0; rs[28] = 0; rs[168] = 0xF;
     st->tss[0][1] = 2; st->tss[0][2] = 2; st->tss[0][4] = 2; st->tss[0][5] = 2;
     st->tss[0][13] = st->tss[0][14] = 3;
-    st->tss[0][16] = st->tss[0][17] = (filter == 1 || getenv("RC_STRETCH_POINT")) ? 1 : 2;
+    st->tss[0][16] = st->tss[0][17] = (filter == 1 || env_flag("RC_STRETCH_POINT")) ? 1 : 2;
     st->tss[0][18] = 0;   /* no mip filter */
     st->tss[1][1] = 1; st->tss[1][4] = 1;
-    if (getenv("RC_STRETCH_WHITE") && g_render->clear) g_render->clear(d, 0, 0, 1, 0xFF00FF00u, 1.f, 0);   /* debugging: pre-clear the destination to green */
+    if (env_flag("RC_STRETCH_WHITE") && g_render->clear) g_render->clear(d, 0, 0, 1, 0xFF00FF00u, 1.f, 0);   /* debugging: pre-clear the destination to green */
     if (g_render->draw) g_render->draw(d, 5, 2, 0, 4, (const uint8_t *)q, sizeof q[0], NULL, 0, 0);
     d->st = saved;
     {   /* RC_DUMP_STRETCH_OUT=frame: write the destination right after the first copy of that frame as /tmp/rc_stretchout_<frame>.ppm */
@@ -615,11 +648,11 @@ W(dev_StretchRect) {   /* (src, srcrect, dst, dstrect, filter) */
         if (dv->frame != last_frame) { last_frame = dv->frame; idx = 0; }
         if (mask && idx < 31 && (mask >> idx++ & 1)) RET(6, S_OK);
     }
-    if (gpu_pair && ARG(3) != dv->backbuffer + 0 * 1 && getenv("RC_NO_STRETCH_DRAW") == NULL) {
+    if (gpu_pair && ARG(3) != dv->backbuffer + 0 * 1 && !env_flag("RC_NO_STRETCH_DRAW")) {
         stretch_by_draw(dv, ARG(1), src, ARG(3), dst, ARG(2), ARG(4), ARG(5));   /* any source (also the back buffer) -> a render target */
         RET(6, S_OK);
     }
-    if (gpu_pair && ARG(1) != dv->backbuffer && getenv("RC_NO_STRETCH_DRAW") == NULL) {
+    if (gpu_pair && ARG(1) != dv->backbuffer && !env_flag("RC_NO_STRETCH_DRAW")) {
         stretch_by_draw(dv, ARG(1), src, ARG(3), dst, ARG(2), ARG(4), ARG(5));   /* a render target -> the back buffer */
         RET(6, S_OK);
     }
@@ -692,7 +725,12 @@ W(dev_Clear) {
     RET(7, S_OK);
 }
 static uint32_t ts_index(uint32_t t) { return t < MAX_TS ? t : MAX_TS - 1; }
-W(dev_SetTransform) { memcpy(dev(c)->st.transform[ts_index(ARG(1))], HP(ARG(2)), 64); RET(3, S_OK); }
+float g_view_m[16];   /* the last non-identity view matrix the game set: the 3D camera (host/dinput.c steers it) */
+W(dev_SetTransform) {
+    memcpy(dev(c)->st.transform[ts_index(ARG(1))], HP(ARG(2)), 64);
+    if (ARG(1) == 2) { const float *m = HP(ARG(2)); if (m[0] != 1.f || m[10] != 1.f) memcpy(g_view_m, m, 64); }
+    RET(3, S_OK);
+}
 W(dev_GetTransform) { memcpy(HP(ARG(2)), dev(c)->st.transform[ts_index(ARG(1))], 64); RET(3, S_OK); }
 W(dev_MultiplyTransform) {
     float *m = dev(c)->st.transform[ts_index(ARG(1))], r[16], b[16];

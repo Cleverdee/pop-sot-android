@@ -532,7 +532,7 @@ void kernel_set_event(uint32_t h) {
 }
 
 W(SetEvent) {
-    if (getenv("RC_LOG_SYNC")) LOG("[sync] SetEvent %x t=%p\n", ARG(0), (void *)pthread_self());
+    if (env_flag("RC_LOG_SYNC")) LOG("[sync] SetEvent %x t=%p\n", ARG(0), (void *)pthread_self());
     WinHandle *x = handle_get(ARG(0), H_EVENT);
     if (!x) RET(1, 0);
     Sync *s = x->ptr;
@@ -587,7 +587,7 @@ W(CreateSemaphoreA) {
     RET(4, h);
 }
 W(ReleaseSemaphore) {
-    if (getenv("RC_LOG_SYNC")) LOG("[sync] ReleaseSemaphore %x t=%p\n", ARG(0), (void *)pthread_self());
+    if (env_flag("RC_LOG_SYNC")) LOG("[sync] ReleaseSemaphore %x t=%p\n", ARG(0), (void *)pthread_self());
     WinHandle *x = handle_get(ARG(0), H_SEMAPHORE);
     if (!x) RET(3, 0);
     Sync *s = x->ptr;
@@ -771,8 +771,47 @@ GuestThread *guest_thread_new(void) {
     return t;
 }
 
+/* Two Thrones: the sound engine's ("DARE") I/O worker pools have a race of their own: a pool resets its job event when
+   the first queued job was cancelled, stranding the job queued behind it, and its worker then sleeps forever while
+   the sound resource waiting on that job keeps the loader and main thread spinning (stuck on the loading screen;
+   RC_DUMP_DARE shows "pending(+3c) 1" with both events unsignalled). Windows' timing almost never hits it; phones do.
+   A watchdog thread signals the job event of a pool whose job has waited unsignalled for 200 ms, which is what a
+   correctly timed run would have seen; a woken worker with nothing to do goes back to sleep. The pools are found as
+   the parameter of the worker threads the game starts at 0x7e6cc0 (pool object: +0 vtable 0x98b6cc, +0x28 job
+   event, +0x3c pending jobs). RC_NO_POOL_NUDGE=1 turns it off. */
+#define POP3_POOL_WORKER 0x007e6cc0u
+#define POP3_POOL_VTABLE 0x0098b6ccu
+static uint32_t g_pools[4];
+static int g_npools;
+static void *pool_nudger(void *arg) {
+    (void)arg;
+    double stuck_since[4] = { 0 };
+    unsigned nudges = 0;
+    for (;;) {
+        usleep(50000);
+        for (int i = 0; i < g_npools; i++) {
+            uint32_t p = g_pools[i];
+            if (R32(p) != POP3_POOL_VTABLE) { stuck_since[i] = 0; continue; }
+            uint32_t pending = R32(p + 0x3c), ev = R32(p + 0x28);
+            if (!pending || kernel_event_state(ev) != 0) { stuck_since[i] = 0; continue; }
+            double now = host_seconds();
+            if (!stuck_since[i]) { stuck_since[i] = now; continue; }
+            if (now - stuck_since[i] < 0.2) continue;
+            if (nudges++ < 20) fprintf(stderr, "[pool] %08x: %u job(s) waiting with the job event unsignalled: signalling it\n", p, pending);
+            kernel_set_event(ev);
+            stuck_since[i] = 0;
+        }
+    }
+    return NULL;
+}
+
 W(CreateThread) {
     uint32_t start = ARG(2), param = ARG(3), flags = ARG(4), tid_out = ARG(5);
+    if (start == POP3_POOL_WORKER && g_npools < 4 && !getenv("RC_NO_POOL_NUDGE")) {
+        g_pools[g_npools++] = param;
+        static int started;
+        if (!started++) { pthread_t pt; if (!pthread_create(&pt, NULL, pool_nudger, NULL)) pthread_detach(pt); }
+    }
     GuestThread *t = guest_thread_new();
 
     uint32_t h = handle_new(H_THREAD);
@@ -901,7 +940,10 @@ W(ReadFile) {
     uint32_t want = ARG(2), got = 0;
     ssize_t n = 0;
     if (x->remote) remote_ensure(x->remote, (uint64_t)lseek(x->fd, 0, SEEK_CUR), want);
+    extern double g_hx[]; extern uint32_t g_hxb[];
+    double t_rd = host_seconds();
     while (got < want && (n = read(x->fd, HP(ARG(1) + got), want - got)) > 0) got += (uint32_t)n;
+    g_hx[0] += host_seconds() - t_rd; g_hxb[0] += got;
     if (got && strstr(x->path, "DefaultProfile.DAT")) {   /* the global video settings: width at file offset 40, height at 44 (800x600 as shipped) */
         const char *res = getenv("RC_RESOLUTION");   /* WxH; default 1920x1080 */
         unsigned w = 1920, h = 1080;
@@ -916,7 +958,7 @@ W(ReadFile) {
     }
     if (ARG(3)) W32(ARG(3), got);
     static unsigned reads;
-    if (g_log && (reads < 40 || getenv("RC_LOG_READS") || reads % 2000 == 0))
+    if (g_log && (reads < 40 || env_flag("RC_LOG_READS") || reads % 2000 == 0))
         LOG("[file] ReadFile #%u(%s: want %u, got %u, overlapped %08x, pos %lld)\n", reads, x->path, want, got, ARG(4), (long long)lseek(x->fd, 0, SEEK_CUR));
     reads++;
     RET(5, n >= 0);
@@ -945,10 +987,10 @@ W(SetFilePointer) {
 }
 W(GetFileSize) {
     WinHandle *x = handle_get(ARG(0), H_FILE);
-    if (!x) { if (getenv("RC_LOG_SYNC")) LOG("[file] GetFileSize(%x) invalid handle\n", ARG(0)); RET(2, 0xFFFFFFFFu); }
+    if (!x) { if (env_flag("RC_LOG_SYNC")) LOG("[file] GetFileSize(%x) invalid handle\n", ARG(0)); RET(2, 0xFFFFFFFFu); }
     struct stat st;
     fstat(x->fd, &st);
-    if (getenv("RC_LOG_SYNC")) LOG("[file] GetFileSize(%x %s) = %lld\n", ARG(0), x->path, (long long)st.st_size);
+    if (env_flag("RC_LOG_SYNC")) LOG("[file] GetFileSize(%x %s) = %lld\n", ARG(0), x->path, (long long)st.st_size);
     if (ARG(1)) W32(ARG(1), (uint32_t)((uint64_t)st.st_size >> 32));
     RET(2, (uint32_t)st.st_size);
 }
@@ -1176,7 +1218,7 @@ W(GetFileAttributesA) {
 }
 W(WaitForMultipleObjects) {
     uint32_t n = ARG(0), hs = ARG(1), all = ARG(2), ms = ARG(3);
-    if (getenv("RC_LOG_SYNC")) LOG("[sync] WFMO t=%p from %08x h0=%x h1=%x\n", (void *)pthread_self(), R32(c->esp), R32(hs), n > 1 ? R32(hs + 4) : 0);
+    if (env_flag("RC_LOG_SYNC")) LOG("[sync] WFMO t=%p from %08x h0=%x h1=%x\n", (void *)pthread_self(), R32(c->esp), R32(hs), n > 1 ? R32(hs + 4) : 0);
     if (all) {
         for (uint32_t i = 0; i < n; i++) { uint32_t r = wait_one(R32(hs + 4 * i), ms); if (r) RET(4, r); }
         RET(4, 0);
@@ -1235,16 +1277,29 @@ W(GetPrivateProfileStringA) {
     const char *def = ARG(2) ? GSTR(ARG(2)) : "";
     if (!ARG(1) || !ini_lookup(GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : NULL, GSTR(ARG(1)), v, sizeof v))
         snprintf(v, sizeof v, "%s", def);
+#ifdef __ANDROID__
+    /* Android: only the size the phone renders at (host/core.c video_size). POP3Config.ini's Mode indexes this list
+       (Mode = 3 was 1280x720), and switching to another size makes the game Reset the device during the level load,
+       after which its loader threads livelock (stuck on the loading screen). GetPrivateProfileIntA returns Mode 0. */
+    if (ARG(1) && !strcasecmp(GSTR(ARG(1)), "Resolutions")) {
+        extern uint32_t host_video_width(void), host_video_height(void);
+        snprintf(v, sizeof v, "%u,%u,32", host_video_width(), host_video_height());
+    }
+#else
     if (ARG(1) && !strcasecmp(GSTR(ARG(1)), "Resolutions") && !strstr(v, "1920,1080") && v[0])   /* offer 1080p too */
         strncat(v, ",1920,1080,32", sizeof v - strlen(v) - 1);
+#endif
     uint32_t n = ARG(4);
-    if (getenv("RC_LOG_INI")) fprintf(stderr, "[ini] %s [%s] %s = '%s' (default '%s')\n", GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : "-", ARG(1) ? GSTR(ARG(1)) : "-", v, def);
+    if (env_flag("RC_LOG_INI")) fprintf(stderr, "[ini] %s [%s] %s = '%s' (default '%s')\n", GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : "-", ARG(1) ? GSTR(ARG(1)) : "-", v, def);
     if (n) snprintf((char *)HP(ARG(3)), n, "%s", v);
     RET(6, n ? (strlen(v) < n ? strlen(v) : n - 1) : 0);
 }
 W(GetPrivateProfileIntA) {
     char v[64];
     if (ARG(1) && !strcasecmp(GSTR(ARG(1)), "Mode") && getenv("RC_MODE")) RET(4, (uint32_t)atoi(getenv("RC_MODE")));   /* resolution index (debug/override) */
+#ifdef __ANDROID__
+    if (ARG(1) && !strcasecmp(GSTR(ARG(1)), "Mode")) RET(4, 0);   /* the one resolution offered (GetPrivateProfileStringA) */
+#endif
     RET(4, ini_lookup(GSTR(ARG(3)), GSTR(ARG(0)), GSTR(ARG(1)), v, sizeof v) ? (uint32_t)strtol(v, NULL, 0) : ARG(2));
 }
 W(WritePrivateProfileStringA) { STUB("WritePrivateProfileStringA\n"); RET(4, 1); }
@@ -1281,7 +1336,8 @@ static const ImportHandler list[] = {
     K(FindResourceW), K(LoadResource), K(LockResource), K(SizeofResource), K(GetConsoleMode), K(SetConsoleMode),
     K(SetConsoleCtrlHandler), K(WriteConsoleA), K(ReadConsoleInputA), K(PeekConsoleInputA),
     K(GetNumberOfConsoleInputEvents), K(GetLocalTime), K(GlobalMemoryStatus), K(ExpandEnvironmentStringsA),
-    K(lstrcmpiA), K(InterlockedCompareExchange), K(SetPriorityClass), K(GetPriorityClass),
+    K(lstrcmpiA), { "KERNEL32.DLL!lstrcmpi", w_lstrcmpiA },   /* the GOG import table names it without the A */
+    K(InterlockedCompareExchange), K(SetPriorityClass), K(GetPriorityClass),
     K(CreateToolhelp32Snapshot), K(Module32First), K(Module32Next), K(SetFileAttributesA), K(GetFileAttributesA),
     K(WaitForMultipleObjects), K(GetPrivateProfileStringA), K(GetPrivateProfileIntA), K(WritePrivateProfileStringA),
 };

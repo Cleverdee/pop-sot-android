@@ -132,7 +132,7 @@ char *ps_to_wgsl(const uint32_t *code, uint32_t n, char *why, size_t why_n) {
             switch (op) {
             case 64: put(&b, "  t%u = vec4<f32>(clamp(i.tc%u.xyz, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);\n", dnum, dnum); break;
             case 65: put(&b, "  kill = kill || any(i.tc%u.xyz < vec3<f32>(0.0));\n", dnum); break;
-            case 66: put(&b, "  t%u = textureSample(tex%u, smp%u, i.tc%u.xy);\n", dnum, dnum, dnum, dnum); break;
+            case 66: put(&b, "  t%u = textureSample(tex%u, smp%u, ptc(i.tc%u, %uu));\n", dnum, dnum, dnum, dnum, dnum); break;
             case 67: case 68:
                 put(&b, "  t%u = textureSample(tex%u, smp%u, i.tc%u.xy + vec2<f32>(u.bem[%u].x * t%u.x + u.bem[%u].z * t%u.y, "
                         "u.bem[%u].y * t%u.x + u.bem[%u].w * t%u.y));\n", dnum, dnum, dnum, dnum, dnum, m, dnum, m, dnum, m, dnum, m);

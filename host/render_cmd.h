@@ -26,10 +26,13 @@ typedef struct {
     float bel[4][4];
 } Uniforms;   /* 416 bytes */
 
-typedef struct PKey { uint32_t blend, src, dst, op, zen, zwrite, zfunc, cull, cmask, topo, ps; } PKey;
+/* vs: a vertex shader handle when the shader runs on the GPU (0: vertices arrive as CVert) */
+/* sten: bit 0 STENCILENABLE, func << 4, fail << 8, zfail << 12, pass << 16, two-sided << 20, CCW func << 24
+   sten2: CCW fail, zfail << 4, pass << 8, read mask << 12, write mask << 20 (Direct3D 9 enums; 0 = stencil off) */
+typedef struct PKey { uint32_t blend, src, dst, op, zen, zwrite, zfunc, cull, cmask, topo, ps, vs, sten, sten2; } PKey;
 
 enum { CMD_TARGET = 1, CMD_CLEAR, CMD_DRAW, CMD_UPLOAD_TEX, CMD_DESTROY_TEX, CMD_UPLOAD_SURF, CMD_DESTROY_SURF,
-       CMD_READBACK, CMD_PRESENT };
+       CMD_READBACK, CMD_PRESENT, CMD_UPLOAD_VB, CMD_DESTROY_VB };
 
 typedef struct { uint32_t type, size; } CmdHdr;   /* size includes the header; 8-byte aligned */
 
@@ -51,14 +54,28 @@ typedef struct {
     uint32_t slot_kind[4], slot_id[4], samp_key[4];
     uint32_t pixel_shader;    /* empty slots read black (pixel shaders) or white (fixed function) */
     int32_t capture_index;    /* debugging: save the back buffer after this draw (native only); -1 none */
+    uint32_t stencil_ref;     /* STENCILREF, when key.sten is on */
     Uniforms u;
     uint32_t nverts;
-    /* CVert verts[nverts] follow */
+    uint32_t vs_stride;       /* key.vs: bytes per vertex (one vec4 per input register the shader reads) */
+    uint32_t vb_id;           /* nonzero: vertices are in that cached GPU buffer (CMD_UPLOAD_VB), indexed */
+    uint32_t nidx;            /* vb_id == 0: nonzero when the draw is indexed into its own vertices */
+    /* key.vs != 0: float consts[96][4] first. Then
+       vb_id == 0: nverts vertices (CVert, or vs_stride bytes each: the shader's inputs), then nidx uint32
+                   indices into them (list topology) when nidx != 0;
+       vb_id != 0: nverts uint32 indices into the cached buffer (list topology, base vertex applied) */
 } CmdDraw;
+
+/* Vertices of a Direct3D vertex buffer that doesn't change, converted once (CVert, or a vertex shader's
+   input registers) and kept on the GPU under a new id until CMD_DESTROY_VB: `bytes` of data follow */
+typedef struct { CmdHdr h; uint32_t id, bytes; } CmdUploadVb;
 
 /* RGBA8 levels follow: for each level, w*h*4 bytes */
 /* fmt: TEXFMT_RGBA8, or a BC format whose blocks follow as stored (DXT textures, when the GPU samples BC) */
-enum { TEXFMT_RGBA8 = 0, TEXFMT_BC1, TEXFMT_BC2, TEXFMT_BC3 };
+enum { TEXFMT_RGBA8 = 0, TEXFMT_BC1, TEXFMT_BC2, TEXFMT_BC3,
+       /* DXT1/3/5 blocks as stored, decoded to RGBA8 by a compute shader (GPUs without BC: Mali) */
+       TEXFMT_DXT1_DEC, TEXFMT_DXT3_DEC, TEXFMT_DXT5_DEC };
+#define TEXFMT_BLOCK_BYTES(f) ((f) == TEXFMT_BC1 || (f) == TEXFMT_DXT1_DEC ? 8u : 16u)
 typedef struct { CmdHdr h; uint32_t id, levels, fmt, w[14], h_[14]; } CmdUploadTex;
 extern int g_gpu_bc;   /* the device can sample BC1-3 (set before the game draws) */
 typedef struct { CmdHdr h; uint32_t id; } CmdDestroy;

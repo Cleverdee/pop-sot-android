@@ -145,8 +145,66 @@ void input_key_usage_sync(int usage, int down) {
     }
 }
 
+/* Key pacing (Android): the game handles about one key per frame (~17-60 fps), but a phone keyboard commits whole
+   words at once and fast typing beats the frame rate, so keys pressed within the same frame are lost (the profile
+   name "Prince" typed quickly came out as "P"; typed 0.7 s apart it was complete). A pacer thread hands the events
+   on in order with each press at least KEY_GAP after the previous press and each release at least KEY_HOLD after
+   its press. Native and browser builds deliver keys directly, as before. */
+#ifdef __ANDROID__
+#include <pthread.h>
+#include <unistd.h>
+/* Paced by the game's frames (time alone failed: at ~19 fps a release and the next press 40 ms apart still shared a
+   frame): a press stays down for KEY_HOLD_FRAMES presented frames, and the next press waits until a frame has
+   passed since the previous release. Half a second at most per wait, in case the game stops presenting. */
+#define KEY_HOLD_FRAMES 2
+#define KEY_MIN_HOLD 0.05
+static struct { int usage, down; } g_kp_q[256];
+static int g_kp_head, g_kp_tail, g_kp_started;
+static pthread_mutex_t g_kp_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_kp_cv = PTHREAD_COND_INITIALIZER;
+extern volatile uint32_t g_present_frames;   /* d3d9.c */
+static void wait_frames(uint32_t target, double min_until) {
+    double give_up = host_seconds() + 0.5;
+    while ((int32_t)(__atomic_load_n(&g_present_frames, __ATOMIC_ACQUIRE) - target) < 0 || host_seconds() < min_until) {
+        if (host_seconds() > give_up) break;
+        usleep(4000);
+    }
+}
+static void *key_pacer(void *arg) {
+    (void)arg;
+    uint32_t release_frame = 0, down_frame[256] = { 0 };
+    double down_at[256] = { 0 };
+    for (;;) {
+        pthread_mutex_lock(&g_kp_m);
+        while (g_kp_head == g_kp_tail) pthread_cond_wait(&g_kp_cv, &g_kp_m);
+        int usage = g_kp_q[g_kp_head].usage, down = g_kp_q[g_kp_head].down;
+        g_kp_head = (g_kp_head + 1) % 256;
+        pthread_mutex_unlock(&g_kp_m);
+        if (down) wait_frames(release_frame + 1, 0);
+        else wait_frames(down_frame[usage & 255] + KEY_HOLD_FRAMES, down_at[usage & 255] + KEY_MIN_HOLD);
+        uint32_t f = __atomic_load_n(&g_present_frames, __ATOMIC_ACQUIRE);
+        if (down) { down_frame[usage & 255] = f; down_at[usage & 255] = host_seconds(); }
+        else release_frame = f;
+        input_key_usage_sync(usage, down);
+    }
+    return NULL;
+}
+#endif
+
 EXPORT void input_key_hid(int usage, int down) {
     LOG("[key] usage %d %s\n", usage, down ? "down" : "up");
+#ifdef __ANDROID__
+    pthread_mutex_lock(&g_kp_m);
+    if (!g_kp_started) { pthread_t t; if (!pthread_create(&t, NULL, key_pacer, NULL)) { pthread_detach(t); g_kp_started = 1; } }
+    int next = (g_kp_tail + 1) % 256;
+    if (g_kp_started && next != g_kp_head) {
+        g_kp_q[g_kp_tail].usage = usage; g_kp_q[g_kp_tail].down = down; g_kp_tail = next;
+        pthread_cond_signal(&g_kp_cv);
+        pthread_mutex_unlock(&g_kp_m);
+        return;
+    }
+    pthread_mutex_unlock(&g_kp_m);
+#endif
     input_key_usage_sync(usage, down);
 }
 

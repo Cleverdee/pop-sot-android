@@ -1,0 +1,69 @@
+// The app: SDL2's Java glue (from the SDL source in third_party/), our activity and touch overlay, and
+// libcricket07.so built by jni/CMakeLists.txt from the generated C, runtime/ and host/.
+plugins {
+    id 'com.android.application'
+}
+
+def repo = file("${rootDir}/..")
+def sdlDir = file(System.getenv('SDL2_SRC') ?: "${repo}/third_party/SDL2")
+
+android {
+    namespace 'com.cleverdee.pop3'
+    compileSdk 35
+    ndkVersion System.getenv('RC_NDK_VERSION') ?: '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'com.cleverdee.pop3'
+        minSdk 29
+        targetSdk 35
+        versionCode 5
+        versionName '1.2.2'
+        // the first 16 hex digits of the SHA-256 of the exe the code was translated from (build.ps1 sets it): the
+        // import screen warns when the player's copy differs. Empty: no check.
+        buildConfigField 'String', 'EXE_SHA256', "\"${System.getenv('RC_EXE_HASH') ?: ''}\""
+        ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild {
+            cmake {
+                arguments "-DRC_REPO=${repo}", "-DSDL2_SRC=${sdlDir}", "-DANDROID_STL=c++_shared",
+                          // 16 KB page alignment: phones with 16 KB pages (allowed since Android 15) won't load
+                          // libraries aligned for 4 KB; aligned this way they load on both
+                          "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                          "-DRC_OPT=${System.getenv('RC_OPT') ?: '-O2'}", "-DRC_LTO=${System.getenv('RC_LTO') ?: 'OFF'}"
+            }
+        }
+    }
+
+    buildFeatures { buildConfig true }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug   // personal sideloading: the SDK's debug key is enough
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs += "${sdlDir}/android-project/app/src/main/java"
+            // build.ps1 -Bundle: the game files (assets game/...) and their manifest, unpacked by SetupActivity
+            def bundle = System.getenv('RC_BUNDLE_DIR')
+            if (bundle) assets.srcDirs += bundle
+        }
+    }
+
+    androidResources {
+        noCompress += ''                       // store assets as they are: the game's files are packed already
+        ignoreAssetsPattern '!.svn:!.git'      // keep every game file (the default drops names starting with _)
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'jni/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    packagingOptions {
+        jniLibs { useLegacyPackaging true }
+    }
+}

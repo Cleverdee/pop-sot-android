@@ -10,6 +10,9 @@
 #ifdef __APPLE__
 #include <AudioToolbox/AudioToolbox.h>
 #endif
+#ifdef __ANDROID__
+#include <aaudio/AAudio.h>
+#endif
 
 #define W(name) static void name(CPU *c)
 #define DSERR_NODRIVER 0x88780078u
@@ -144,10 +147,107 @@ static void advance(SBuf *b, float *mix, int out_frames) {
     }
 }
 
+/* ------------------------------------------------------------------ host streams (Bink movie audio, host/bink.c)
+ * Decoded PCM the host pushes: a ring of stereo float frames at the source rate, resampled to MIX_RATE in the mixer
+ * (linear interpolation). `rd` counts source frames consumed; the movie's audio clock is that minus the output
+ * latency. All fields are under g_snd_lock. */
+#define HS_MAX 4
+#define HS_RING (1u << 17)   /* frames: 2.7 s at 48 kHz */
+typedef struct {
+    int used, paused;
+    uint32_t rate;
+    float vol, g_cur;
+    float *ring;             /* HS_RING * 2 */
+    uint64_t wr, rd;         /* frames written / consumed since open or flush */
+    double frac;
+} HStream;
+static HStream g_hs[HS_MAX];
+static void start_mixer(void);
+
+int dsound_hs_open(uint32_t rate) {
+    start_mixer();
+    pthread_mutex_lock(&g_snd_lock);
+    int id = -1;
+    for (int i = 0; i < HS_MAX; i++) if (!g_hs[i].used) { id = i; break; }
+    if (id >= 0) {
+        HStream *s = &g_hs[id];
+        if (!s->ring) s->ring = malloc(sizeof(float) * 2 * HS_RING);
+        s->used = 1; s->paused = 0; s->rate = rate ? rate : MIX_RATE; s->vol = 1.f; s->g_cur = 1.f;
+        s->wr = s->rd = 0; s->frac = 0;
+    }
+    pthread_mutex_unlock(&g_snd_lock);
+    return id;
+}
+void dsound_hs_close(int id) {
+    if (id < 0 || id >= HS_MAX) return;
+    pthread_mutex_lock(&g_snd_lock); g_hs[id].used = 0; pthread_mutex_unlock(&g_snd_lock);
+}
+void dsound_hs_flush(int id) {
+    if (id < 0 || id >= HS_MAX) return;
+    pthread_mutex_lock(&g_snd_lock); g_hs[id].wr = g_hs[id].rd = 0; g_hs[id].frac = 0; pthread_mutex_unlock(&g_snd_lock);
+}
+void dsound_hs_pause(int id, int p) {
+    if (id < 0 || id >= HS_MAX) return;
+    pthread_mutex_lock(&g_snd_lock); g_hs[id].paused = p; pthread_mutex_unlock(&g_snd_lock);
+}
+void dsound_hs_volume(int id, float v) {
+    if (id < 0 || id >= HS_MAX) return;
+    pthread_mutex_lock(&g_snd_lock); g_hs[id].vol = v; pthread_mutex_unlock(&g_snd_lock);
+}
+/* Appends `n` frames (planar left/right; r may equal l for mono). Returns the frames that fit. */
+uint32_t dsound_hs_write(int id, const float *l, const float *r, uint32_t n) {
+    if (id < 0 || id >= HS_MAX) return 0;
+    pthread_mutex_lock(&g_snd_lock);
+    HStream *s = &g_hs[id];
+    uint32_t room = HS_RING - (uint32_t)(s->wr - s->rd);
+    if (n > room) n = room;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t k = (uint32_t)((s->wr + i) & (HS_RING - 1));
+        s->ring[2 * k] = l[i]; s->ring[2 * k + 1] = r[i];
+    }
+    s->wr += n;
+    pthread_mutex_unlock(&g_snd_lock);
+    return n;
+}
+/* Frames queued and not yet mixed. */
+uint32_t dsound_hs_queued(int id) {
+    if (id < 0 || id >= HS_MAX) return 0;
+    pthread_mutex_lock(&g_snd_lock); uint32_t q = (uint32_t)(g_hs[id].wr - g_hs[id].rd); pthread_mutex_unlock(&g_snd_lock);
+    return q;
+}
+/* Seconds of the stream that have reached the speakers (consumed minus what sits in the output queue). */
+double dsound_hs_clock(int id) {
+    if (id < 0 || id >= HS_MAX) return 0;
+    pthread_mutex_lock(&g_snd_lock);
+    HStream *s = &g_hs[id];
+    double t = ((double)s->rd + s->frac) / s->rate - (double)g_out_latency / MIX_RATE;
+    pthread_mutex_unlock(&g_snd_lock);
+    return t > 0 ? t : 0;
+}
+static void hs_mix(HStream *s, float *mix, int frames) {
+    if (!s->used || s->paused) return;
+    double step = (double)s->rate / MIX_RATE;
+    for (int i = 0; i < frames; i++) {
+        uint64_t avail = s->wr - s->rd;
+        if (!avail) break;                    /* underrun: silence, and the clock stalls */
+        uint32_t k = (uint32_t)(s->rd & (HS_RING - 1)), k2 = (uint32_t)((s->rd + (avail > 1)) & (HS_RING - 1));
+        float fr = (float)s->frac;
+        float l = s->ring[2 * k] + (s->ring[2 * k2] - s->ring[2 * k]) * fr;
+        float r = s->ring[2 * k + 1] + (s->ring[2 * k2 + 1] - s->ring[2 * k + 1]) * fr;
+        s->g_cur += (s->vol - s->g_cur) * (1.f / 96.f);
+        mix[2 * i] += l * s->g_cur; mix[2 * i + 1] += r * s->g_cur;
+        s->frac += step;
+        uint64_t adv = (uint64_t)s->frac;
+        if (adv > avail) { adv = avail; s->frac = 0; } else s->frac -= (double)adv;
+        s->rd += adv;
+    }
+}
+
 static void mix_frames(float *out, int frames) {
     memset(out, 0, sizeof(float) * 2 * (size_t)frames);
     pthread_mutex_lock(&g_snd_lock);
     for (SBuf *b = g_bufs; b; b = b->next) advance(b, out, frames);
+    for (int i = 0; i < HS_MAX; i++) hs_mix(&g_hs[i], out, frames);
     pthread_mutex_unlock(&g_snd_lock);
     for (int i = 0; i < 2 * frames; i++) {   /* soft limiter: many loud buffers add up, hard clipping sounds like blasting */
         float x = out[i] * 0.8f, a = fabsf(x);
@@ -188,6 +288,104 @@ static int start_coreaudio(void) {
 }
 #endif
 
+#ifdef __ANDROID__
+/* Android (from the Cricket 07 port): an AAudio stream pulls stereo float frames from the mixer. A supervisor
+ * thread owns it: it opens the stream while the app is in the foreground, closes it in the background, and
+ * reopens it when Android stops or disconnects it (Samsung stops a backgrounded app's player on screen lock).
+ * Whenever no stream is running the supervisor mixes into nothing in real time: the play cursors must keep
+ * moving, or the game's streaming code sees stuck buffers. */
+static AAudioStream *g_aa;
+static volatile int g_aa_lost;        /* error callback: disconnected */
+static volatile int g_fg = 1;         /* GameActivity is resumed */
+
+static aaudio_data_callback_result_t aa_data(AAudioStream *s, void *ud, void *audio, int32_t frames) {
+    (void)ud;
+    mix_frames((float *)audio, frames);
+    int32_t q = AAudioStream_getBufferSizeInFrames(s);   /* queued ahead of the speakers, for GetCurrentPosition */
+    g_out_latency = q > 0 ? (uint32_t)q : (uint32_t)frames;
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+static void aa_error(AAudioStream *s, void *ud, aaudio_result_t err) {
+    (void)s; (void)ud;
+    fprintf(stderr, "[dsound] audio stream error %d (%s)\n", (int)err, AAudio_convertResultToText(err));
+    g_aa_lost = 1;   /* the supervisor reopens it: the stream can't be closed from its own callbacks */
+}
+
+static int open_aaudio(void) {
+    AAudioStreamBuilder *b;
+    if (AAudio_createStreamBuilder(&b) != AAUDIO_OK) return 0;
+    AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_FLOAT);
+    AAudioStreamBuilder_setChannelCount(b, 2);
+    AAudioStreamBuilder_setSampleRate(b, MIX_RATE);   /* AAudio resamples to the device rate */
+    AAudioStreamBuilder_setUsage(b, AAUDIO_USAGE_GAME);
+    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setDataCallback(b, aa_data, NULL);
+    AAudioStreamBuilder_setErrorCallback(b, aa_error, NULL);
+    AAudioStream *s = NULL;
+    aaudio_result_t r = AAudioStreamBuilder_openStream(b, &s);
+    AAudioStreamBuilder_delete(b);
+    if (r != AAUDIO_OK) { fprintf(stderr, "[dsound] AAudio open: %s\n", AAudio_convertResultToText(r)); return 0; }
+    if (AAudioStream_getSampleRate(s) != MIX_RATE || AAudioStream_getChannelCount(s) != 2) {
+        fprintf(stderr, "[dsound] AAudio gave %d Hz, %d channels\n", AAudioStream_getSampleRate(s), AAudioStream_getChannelCount(s));
+        AAudioStream_close(s);
+        return 0;
+    }
+    /* a few bursts of cushion: the game thread is busy and the mixer shares the guest lock */
+    int32_t burst = AAudioStream_getFramesPerBurst(s);
+    if (burst > 0) AAudioStream_setBufferSizeInFrames(s, burst * 4);
+    g_aa_lost = 0;
+    if ((r = AAudioStream_requestStart(s)) != AAUDIO_OK) {
+        fprintf(stderr, "[dsound] AAudio start: %s\n", AAudio_convertResultToText(r));
+        AAudioStream_close(s);
+        return 0;
+    }
+    g_aa = s;
+    return 1;
+}
+
+static void *audio_supervisor(void *arg) {
+    (void)arg;
+    float tmp[2 * 441];
+    double next = host_seconds(), retry_at = 0;
+    int opened_before = 0;
+    for (;;) {
+        if (g_aa) {
+            aaudio_stream_state_t s = AAudioStream_getState(g_aa);
+            int ok = !g_aa_lost && (s == AAUDIO_STREAM_STATE_STARTING || s == AAUDIO_STREAM_STATE_STARTED);
+            if (!g_fg || !ok) {
+                if (g_fg) fprintf(stderr, "[dsound] audio stream stopped from outside (state %d): reopening\n", (int)s);
+                AAudioStream_requestStop(g_aa);
+                AAudioStream_close(g_aa);   /* waits for a callback in progress */
+                g_aa = NULL;
+                g_out_latency = 0;
+                next = host_seconds();
+            }
+        }
+        if (!g_aa && g_fg && host_seconds() >= retry_at) {
+            if (open_aaudio()) fprintf(stderr, "[dsound] audio output %s\n", opened_before++ ? "reopened" : "started (AAudio)");
+            else retry_at = host_seconds() + 1.0;
+        }
+        if (g_aa) { usleep(50000); next = host_seconds(); continue; }   /* the stream's callback mixes */
+        mix_frames(tmp, 441);   /* no stream: 10 ms into nothing, to keep the cursors moving */
+        next += 441.0 / MIX_RATE;
+        double now = host_seconds();
+        if (next < now - 0.2) next = now;
+        if (next > now) usleep((useconds_t)((next - now) * 1e6));
+    }
+    return NULL;
+}
+
+static int start_android_audio(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, audio_supervisor, NULL)) return 0;
+    pthread_detach(t);
+    return 1;
+}
+
+/* GameActivity.onPause/onResume (android/host/window_android.c) */
+void dsound_android_lifecycle(int foreground) { g_fg = foreground; }
+#endif
+
 #ifdef __EMSCRIPTEN__
 /* Browser: mixed audio goes into a ring in shared memory that the page's AudioWorklet reads
    (web/loader.js). The ring holds stereo float frames; w and r count frames written and read. */
@@ -222,7 +420,7 @@ static void *silent_mixer(void *arg) {
             mix_frames(tmp, 441);             /* 10 ms of game time */
 #ifdef __EMSCRIPTEN__
             /* the page plays it; the ring drops what doesn't fit and never touches game state */
-            if (!getenv("RC_NO_AUDIO")) ring_write(tmp, 441);
+            if (!env_flag("RC_NO_AUDIO")) ring_write(tmp, 441);
 #endif
             next += 10000;
             sched_wait(NULL, NULL, next, NULL);
@@ -231,7 +429,7 @@ static void *silent_mixer(void *arg) {
 #ifdef __EMSCRIPTEN__
     /* The page's audio clock drains the ring; this thread tops it up to RING_TARGET. Pacing on the host clock
        instead drifts against the audio clock, and every drift step is an underrun (silence: a click) or a drop. */
-    if (!getenv("RC_NO_AUDIO")) {
+    if (!env_flag("RC_NO_AUDIO")) {
         for (;;) {
             uint32_t w = __atomic_load_n(&g_ring.w, __ATOMIC_ACQUIRE), r = __atomic_load_n(&g_ring.r, __ATOMIC_ACQUIRE);
             if (w - r < RING_TARGET) ring_write_mix(tmp);
@@ -257,6 +455,9 @@ static void start_mixer(void) {
     g_mixer_sched = sched_new("mixer", NULL, NULL);
 #ifdef __APPLE__
     if (!g_mixer_sched && !getenv("RC_NO_AUDIO") && start_coreaudio()) { LOG("[dsound] CoreAudio output started\n"); return; }
+#endif
+#ifdef __ANDROID__
+    if (!g_mixer_sched && !getenv("RC_NO_AUDIO") && start_android_audio()) return;
 #endif
     pthread_t t;
     pthread_create(&t, NULL, silent_mixer, NULL);

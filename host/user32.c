@@ -113,6 +113,18 @@ W(DefWindowProcA) { RET(4, 0); }
 
 /* ------------------------------------------------------------------ window */
 
+/* The GOG build registers a clipboard format at start-up (D3DX/launcher glue); nothing uses the clipboard here.
+   Windows hands out ids from 0xC000; the same name gets the same id. */
+W(RegisterClipboardFormatA) {
+    static char names[32][64]; static int n;
+    const char *s = ARG(0) ? GSTR(ARG(0)) : "";
+    for (int i = 0; i < n; i++) if (!strcasecmp(names[i], s)) RET(1, 0xC000 + i);
+    if (n == 32) RET(1, 0);
+    snprintf(names[n], sizeof names[n], "%s", s);
+    LOG("[user32] RegisterClipboardFormatA(%s) -> %x\n", s, 0xC000 + n);
+    RET(1, 0xC000 + n++);
+}
+
 W(RegisterClassA) {
     g_wndproc = R32(ARG(0) + 4);  /* WNDCLASSA.lpfnWndProc */
     LOG("[user32] RegisterClassA(%s) wndproc=%08x\n", GSTR(R32(ARG(0) + 36)), g_wndproc);
@@ -279,6 +291,7 @@ W(wsprintfA) {
 static const ImportHandler list[] = {
     U(PeekMessageA), U(GetMessageA), U(TranslateMessage), U(DispatchMessageA), U(PostMessageA), U(SendMessageA),
     U(SendNotifyMessageA), U(PostQuitMessage), U(DefWindowProcA), U(RegisterClassA), U(RegisterClassExA),
+    U(RegisterClipboardFormatA),
     U(UnregisterClassA), U(CreateWindowExA), U(DestroyWindow), U(ShowWindow), U(UpdateWindow), U(MoveWindow),
     U(SetWindowPos), U(SetWindowTextA), U(GetWindowLongA), U(FindWindowA), U(GetDesktopWindow),
     U(GetForegroundWindow), U(SetForegroundWindow), U(SetActiveWindow), U(SetFocus), U(IsIconic),

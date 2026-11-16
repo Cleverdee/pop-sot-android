@@ -73,7 +73,35 @@ static void *poller(void *arg) {
     return NULL;
 }
 
+#ifdef __ANDROID__
+#include <unistd.h>
+#include <sys/syscall.h>
+/* Android schedules the game thread on any core, and on phones with big and little cores (Galaxy A17: two
+   Cortex-A76 at 2.2 GHz, six A55 at 2.0 GHz) it often lands on a little one, two to three times slower: frames
+   that took 15 ms took 60-140. The game thread is kept on the fastest cores (RC_ANY_CORE=1: don't). */
+static void pin_to_fast_cores(void) {
+    if (getenv("RC_ANY_CORE")) return;
+    unsigned f[64] = { 0 }, best = 0;
+    int n = 0;
+    for (int i = 0; i < 64; i++) {
+        char path[96];
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;
+        if (fscanf(fp, "%u", &f[i]) == 1 && f[i] > best) best = f[i];
+        fclose(fp);
+    }
+    unsigned long long set = 0;
+    for (int i = 0; i < 64; i++) if (best && f[i] == best) { set |= 1ull << i; n++; }
+    if (!n) return;
+    int r = (int)syscall(__NR_sched_setaffinity, 0, sizeof set, &set);
+    fprintf(stderr, "[main] game thread on the %d fastest cores (%u kHz): %s\n", n, best, r ? "failed" : "ok");
+}
+#endif
 static void *game_main(void *arg) {
+#ifdef __ANDROID__
+    pin_to_fast_cores();
+#endif
     (void)arg;
     CPU *c = &g_cpu;
     thread_main_init(c);
@@ -92,6 +120,10 @@ static void *game_main(void *arg) {
 #if defined(__EMSCRIPTEN__) && !defined(RC_NODE_BUILD)
 #include <emscripten/wasmfs.h>
 #endif
+#ifdef __ANDROID__
+#include <SDL.h>   /* renames main to SDL_main, which SDLActivity calls */
+const char *android_game_dir(void);   /* android/host/window_android.c */
+#endif
 
 int main(int argc, char **argv) {
 #if defined(__EMSCRIPTEN__) && !defined(RC_NODE_BUILD)
@@ -99,6 +131,9 @@ int main(int argc, char **argv) {
     wasmfs_create_directory("/opfs", 0777, wasmfs_create_opfs_backend());
 #endif
     const char *game = argc > 1 ? argv[1] : "game";
+#ifdef __ANDROID__
+    if (argc <= 1 && !(game = android_game_dir())) return 1;   /* app-specific storage: .../files/game */
+#endif
     if (!realpath(game, g_game_root)) { perror(game); return 1; }
     /* RC_USERDATA: another folder for saves and settings (e.g. a fresh copy per test run) */
     if (getenv("RC_USERDATA")) snprintf(g_user_root, sizeof g_user_root, "%s", getenv("RC_USERDATA"));

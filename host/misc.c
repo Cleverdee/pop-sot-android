@@ -209,6 +209,23 @@ static void *timer_main(void *arg) {
             const char *pk = getenv("RC_PEEK");   /* RC_PEEK=addr,addr,...: print these guest words every ~5 s */
             for (; pk && *pk; pk = strchr(pk, ',') ? strchr(pk, ',') + 1 : NULL)
                 fprintf(stderr, "[peek] %08lx = %08x\n", strtoul(pk, NULL, 16), R32((uint32_t)strtoul(pk, NULL, 16)));
+            {   /* RC_MEMDUMP=secs:addr:len[,addr:len...]: once, `secs` after start, write those guest ranges to
+                   <userdata>/memdump_<addr>.bin (for replaying a stuck function against the original x86) */
+                static int done; static double t0;
+                const char *md = getenv("RC_MEMDUMP");
+                if (md && !t0) t0 = host_seconds();   /* host_seconds() is monotonic, not time since start */
+                if (md && !done && host_seconds() - t0 >= strtod(md, NULL)) {
+                    done = 1;
+                    for (const char *p = strchr(md, ':'); p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : NULL) {
+                        if (*p == ':') p++;
+                        char *e; uint32_t a = (uint32_t)strtoul(p, &e, 16), n = *e == ':' ? (uint32_t)strtoul(e + 1, NULL, 16) : 0;
+                        char path[4200]; snprintf(path, sizeof path, "%s/memdump_%08x.bin", g_user_root, a);
+                        FILE *f = fopen(path, "wb");
+                        if (f) { fwrite(HP(a), 1, n, f); fclose(f); }
+                        fprintf(stderr, "[memdump] %08x+%x -> %s (%s)\n", a, n, path, f ? "ok" : "failed");
+                    }
+                }
+            }
         }
         guest_stdcall(c, tm.callback, 5, a);
         pthread_mutex_lock(&g_timer_lock);
@@ -285,3 +302,33 @@ static const ImportHandler dx_list[] = {
     { "DSOUND.DLL!#6", w_DirectSoundCaptureCreate },
 };
 const ImportTable directx_imports = { dx_list, sizeof dx_list / sizeof dx_list[0] };
+
+/* DEBUG: called at the entry of the game's compressed-stream reader (f_00432160, patched into out_all/recomp_004.c)
+   to log its arguments and globals, for comparing against the original x86 under Unicorn. RC_DBG_READER=1 */
+void rc_dbg_reader(CPU *c) {
+    static int on = -1, n;
+    if (on < 0) on = getenv("RC_DBG_READER") != NULL;
+    if (!on || n++ > 3000) return;
+    fprintf(stderr, "[rd] %d args %08x %08x %08x |", n, R32(c->esp + 4), R32(c->esp + 8), R32(c->esp + 12));
+    for (uint32_t a = 0xcd92a0; a <= 0xcd92dc; a += 4) fprintf(stderr, " %x", R32(a));
+    fprintf(stderr, " | ov %x thr %s\n", R32(0xa05138), "");
+}
+
+/* DEBUG: entry of f_00436040(key, obj): obj+0x5c becomes the record key the loader searches for. RC_DBG_READER=1 */
+void rc_dbg_436040(CPU *c) {
+    static int on = -1, n;
+    if (on < 0) on = getenv("RC_DBG_READER") != NULL;
+    if (!on || n++ > 500) return;
+    uint32_t a1 = R32(c->esp + 4), o = R32(c->esp + 8);
+    fprintf(stderr, "[436040] %d from %08x a1 %08x obj %08x [0]=%08x [4]=%08x [50]=%08x [5c]=%08x\n", n, R32(c->esp), a1, o,
+            o ? R32(o) : 0, o ? R32(o + 4) : 0, o ? R32(o + 0x50) : 0, o ? R32(o + 0x5c) : 0);
+}
+
+/* DEBUG: entry of f_00432c70(key): the key the record search (0x4334c0) will look for. RC_DBG_READER=1 */
+void rc_dbg_setkey(CPU *c) {
+    static int on = -1, n;
+    if (on < 0) on = getenv("RC_DBG_READER") != NULL;
+    if (!on || n++ > 500) return;
+    fprintf(stderr, "[setkey] %d from %08x key %08x  (caller frame %08x %08x %08x %08x)\n", n, R32(c->esp), R32(c->esp + 4),
+            R32(c->esp + 8), R32(c->esp + 12), R32(c->esp + 16), R32(c->esp + 20));
+}

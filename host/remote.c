@@ -29,7 +29,7 @@ typedef struct Remote {
 } Remote;
 static Remote *g_remotes;
 static pthread_mutex_t g_remote_lock = PTHREAD_MUTEX_INITIALIZER;
-extern char g_game_root[1024];
+extern char g_game_root[4096];
 
 /* synchronous range request (allowed in workers); copies the body to dest, returns its length or -1 */
 EM_JS(int, rc_fetch_range, (const char *url, double start, int len, uint8_t *dest), {

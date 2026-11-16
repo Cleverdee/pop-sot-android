@@ -1,0 +1,10 @@
+# Build output (gradle, CMake, the APK) and machine-specific paths
+.gradle/
+app/.cxx/
+app/build/
+build/
+output/
+local.properties
+*.apk
+*.keystore
+*.jks
