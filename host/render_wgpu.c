@@ -1350,7 +1350,7 @@ static WGPUCommandEncoder g_dxt_enc;
  * jobs in order (finish, buffer writes, DXT decodes, submit, retired textures), and a present job hands the frame
  * to the present thread. Anything else that touches the queue in an order-sensitive way first waits for it to
  * be idle (q_drain). At most a few jobs wait, so the game stays within a frame of the GPU work.
- * RC_ASYNC_SUBMIT=0: submit on the game thread as before. */
+ * RC_ASYNC_SUBMIT=1 turns it on (off by default until it is tested on more phones). */
 typedef struct QJob {
     WGPUCommandEncoder enc, dxt;
     uint8_t *v, *u, *c;
@@ -1429,7 +1429,7 @@ static void q_drain(void) {
 static void *memdup_(const void *p, size_t n) { void *d = n ? malloc(n) : NULL; if (n) memcpy(d, p, n); return d; }
 static void q_start(void) {
     const char *e = getenv("RC_ASYNC_SUBMIT");
-    if (e && !atoi(e)) return;
+    if (!e || !atoi(e)) return;   /* opt-in (RC_ASYNC_SUBMIT=1) until tested on more phones */
     pthread_t t;
     if (pthread_create(&t, NULL, qjob_thread, NULL)) return;
     pthread_detach(t);
