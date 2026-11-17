@@ -649,6 +649,13 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     fvf_layout(sh ? 0x2 /* XYZ: transformed by the shader */ : st->vs, &L);
     const uint8_t *vb = NULL;
     uint32_t stride;
+    {   /* RC_LOG_VDECL=1: draws with no vertex layout (FVF 0, no declaration) */
+        static int lg = -1, nl;
+        if (lg < 0) lg = getenv("RC_LOG_VDECL") != NULL;
+        if (lg && st->vs == 0 && nl++ < 20)
+            fprintf(stderr, "[vdecl] draw with no layout: vdecl %08x fvf %x vshader %08x stride %u prims %u up %d\n", st->vdecl, st->fvf,
+                    st->vshader, st->stream_stride[0], prim_count, vertices_up != NULL);
+    }
     if (vertices_up) { vb = vertices_up; stride = up_stride; }
     else {
         Buffer *b = com_data(st->stream_vb[0]);
@@ -905,6 +912,21 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     PKey k = { st->rs[27] != 0, st->rs[19], st->rs[20], st->rs[171] ? st->rs[171] : 1, st->rs[7] != 0 && st->depth_stencil,
                st->rs[14], st->rs[23], st->rs[22], st->rs[168] & 0xF, topo, st->ps };
     if (L.pos_type == 0x4) k.cull = 1;  /* keep 2D simple: no culling for pre-transformed vertices */
+    k.bias = st->rs[195]; k.sbias = st->rs[175];   /* depth bias (float bits; 0 = none) */
+    {   /* the game's depth bias, logged once per new value; RC_LIGHT_BIAS=<n>: pull additive passes without depth
+           writes (multi-pass lighting) n depth units towards the camera (experiment for black floors and walls) */
+        static uint32_t seen_b = 0, seen_s = 0;
+        if ((k.bias && k.bias != seen_b) || (k.sbias && k.sbias != seen_s)) {
+            float fb, fs; memcpy(&fb, &k.bias, 4); memcpy(&fs, &k.sbias, 4);
+            fprintf(stderr, "[zbias] depth bias %g slope %g (blend %u zwrite %u zfunc %u)\n", fb, fs, k.blend, k.zwrite, k.zfunc);
+            seen_b = k.bias; seen_s = k.sbias;
+        }
+        static float lb = -1;
+        if (lb < 0) lb = getenv("RC_LIGHT_BIAS") ? (float)atof(getenv("RC_LIGHT_BIAS")) : 0;
+        if (lb > 0 && k.blend && !k.zwrite && k.src == 2 && k.dst == 2 && !k.bias) {
+            float b = -lb / 16777216.f; memcpy(&k.bias, &b, 4);
+        }
+    }
     /* D3DCULL_CW (2) culls clockwise triangles, which WebGPU front-face CW makes the front: cull modes map straight through
        (swapping them dropped every back-facing surface: sky, sea, ground) */
     { static int nc = -1; if (nc < 0) nc = getenv("RC_NO_CULL") != NULL; if (nc) k.cull = 1; }   /* debugging */

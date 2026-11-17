@@ -29,7 +29,8 @@ typedef struct {
 /* vs: a vertex shader handle when the shader runs on the GPU (0: vertices arrive as CVert) */
 /* sten: bit 0 STENCILENABLE, func << 4, fail << 8, zfail << 12, pass << 16, two-sided << 20, CCW func << 24
    sten2: CCW fail, zfail << 4, pass << 8, read mask << 12, write mask << 20 (Direct3D 9 enums; 0 = stencil off) */
-typedef struct PKey { uint32_t blend, src, dst, op, zen, zwrite, zfunc, cull, cmask, topo, ps, vs, sten, sten2; } PKey;
+typedef struct PKey { uint32_t blend, src, dst, op, zen, zwrite, zfunc, cull, cmask, topo, ps, vs, sten, sten2;
+                      uint32_t bias, sbias; } PKey;   /* D3DRS_DEPTHBIAS, D3DRS_SLOPESCALEDEPTHBIAS (float bits) */
 
 enum { CMD_TARGET = 1, CMD_CLEAR, CMD_DRAW, CMD_UPLOAD_TEX, CMD_DESTROY_TEX, CMD_UPLOAD_SURF, CMD_DESTROY_SURF,
        CMD_READBACK, CMD_PRESENT, CMD_UPLOAD_VB, CMD_DESTROY_VB };

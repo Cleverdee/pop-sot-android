@@ -768,7 +768,7 @@ static int known_add(uint64_t h) {   /* 1 if it wasn't known yet */
 }
 
 /* pipelines from the file: p is NULL while being built; taken once pipeline_for owns it (or builds it) */
-#define NWARM 4096
+#define NWARM 16384
 typedef struct { WKey w; WGPURenderPipeline p; int used, taken, pending; } WEntry;   /* pending: queued for the async builder */
 static WEntry g_warm[NWARM];
 static WEntry *warm_slot(const WKey *w) {
@@ -941,7 +941,7 @@ static VsGpu *vs_gpu(uint32_t handle) {
 /* ------------------------------------------------------------------ pipelines */
 
 typedef struct { PKey k; WGPURenderPipeline p; } PEntry;
-#define NPIPES 2048
+#define NPIPES 16384   /* one per state combination seen; Warrior Within passes 2048 below deck (draws were skipped when full) */
 static PEntry g_pipes[NPIPES];
 
 static WGPUBlendFactor bf(uint32_t b) {
@@ -1005,6 +1005,11 @@ static WGPURenderPipeline make_pipeline(const PKey *k, WGPUShaderModule fm, WGPU
     ds.format = WGPUTextureFormat_Depth24PlusStencil8;
     ds.depthWriteEnabled = k->zen && k->zwrite ? WGPUOptionalBool_True : WGPUOptionalBool_False;
     ds.depthCompare = k->zen ? cmpf(k->zfunc) : WGPUCompareFunction_Always;
+    if (k->zen && (k->bias || k->sbias)) {   /* D3D9 depth bias: a depth offset (in depth-range units) and a slope factor */
+        float b, sb; memcpy(&b, &k->bias, 4); memcpy(&sb, &k->sbias, 4);
+        ds.depthBias = (int32_t)lrintf(b * 16777216.f);   /* units of the 24-bit depth buffer's step */
+        ds.depthBiasSlopeScale = sb;
+    }
     if (k->sten & 1) {
         uint32_t t = k->sten, t2 = k->sten2;
         ds.stencilFront.compare = cmpf((t >> 4) & 15);
@@ -1161,9 +1166,12 @@ static WGPURenderPipeline pipeline_for(const PKey *k) {
             return e->p;
         }
     }
-    static int warned;
-    if (!warned++) fprintf(stderr, "[wgpu] pipeline cache full\n");
-    return NULL;
+    /* full: start the table over rather than skip draws (that hid Warrior Within's hull below deck); the pipelines
+       themselves live on in the warm table (g_warm), so refilling the map is cheap */
+    static int resets;
+    fprintf(stderr, "[wgpu] pipeline table full (%d entries): emptied (%d)\n", NPIPES, ++resets);
+    memset(g_pipes, 0, sizeof g_pipes);   /* only the handle->pipeline map: the pipelines stay owned by the warm table */
+    return pipeline_for(k);
 }
 
 #ifndef __EMSCRIPTEN__
@@ -2084,13 +2092,25 @@ static void exec_draw(const CmdDraw *c) {
     g_upos += USTRIDE;
 #ifndef __EMSCRIPTEN__
     if (c->capture_index >= 0) {
-        /* frame capture: the back buffer after every draw, as /tmp/rc_cap/NNNN.png */
-        mkdir("/tmp/rc_cap", 0755);
-        char path[64];
-        snprintf(path, sizeof path, "/tmp/rc_cap/%04d.png", c->capture_index);
-        submit();
-        capture_png(path);
-        begin_pass(0, 0, 1.f, 0);
+        /* frame capture: the target this draw went to (render target or back buffer) after each draw, as
+           <userdata>/cap/NNNN.png (desktop: /tmp/rc_cap); RC_CAP_RANGE="lo hi" limits it to those draws */
+        static int lo = -2, hi;
+        if (lo == -2) { const char *e = getenv("RC_CAP_RANGE"); lo = -1; hi = 1 << 30; if (e) sscanf(e, "%d %d", &lo, &hi); }
+        if (c->capture_index >= lo && c->capture_index <= hi) {
+            extern char g_user_root[];
+            char dir[1100], path[1200];
+#ifdef __ANDROID__
+            snprintf(dir, sizeof dir, "%s/cap", g_user_root);
+#else
+            snprintf(dir, sizeof dir, "/tmp/rc_cap");
+#endif
+            mkdir(dir, 0755);
+            snprintf(path, sizeof path, "%s/%04d.png", dir, c->capture_index);
+            submit();
+            if (g_tgt_gs && g_tgt_gs->tex) capture_tex(g_tgt_gs->tex, g_tgt_gs->w, g_tgt_gs->h, path);
+            else capture_png(path);
+            begin_pass(0, 0, 1.f, 0);
+        }
     }
 #endif
 }
