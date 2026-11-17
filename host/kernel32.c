@@ -779,8 +779,8 @@ GuestThread *guest_thread_new(void) {
    correctly timed run would have seen; a woken worker with nothing to do goes back to sleep. The pools are found as
    the parameter of the worker threads the game starts at 0x7e6cc0 (pool object: +0 vtable 0x98b6cc, +0x28 job
    event, +0x3c pending jobs). RC_NO_POOL_NUDGE=1 turns it off. */
-#define POP3_POOL_WORKER 0x007e6cc0u
-#define POP3_POOL_VTABLE 0x0098b6ccu
+#define POP3_POOL_WORKER GAME_POOL_WORKER
+#define POP3_POOL_VTABLE GAME_POOL_VTABLE
 static uint32_t g_pools[4];
 static int g_npools;
 static void *pool_nudger(void *arg) {

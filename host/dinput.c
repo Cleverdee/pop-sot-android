@@ -159,10 +159,10 @@ void dinput_mouse_move(int dx, int dy) {
 }
 /* the game's factor from mouse counts to camera units (0: not Two Thrones, or not set up yet) */
 static float game_mouse_scale(void) {
-    float k = (RF32(0xa038a4u) + RF32(0x98108cu)) * RF32(0x980810u);
-    if (!(k > 0.01f && k < 50.f) || RF32(0x980810u) != 1.1f) return 0;
+    float k = (RF32(GAME_MOUSE_OPT) + RF32(GAME_MOUSE_ADD)) * RF32(GAME_MOUSE_MUL);
+    if (!(k > 0.01f && k < 50.f) || RF32(GAME_MOUSE_MUL) != 1.1f) return 0;
     static float logged;
-    if (k != logged) { logged = k; fprintf(stderr, "[dinput] game mouse scale %.3f (Mouse speed option %.3f)\n", k, RF32(0xa038a4u)); }
+    if (k != logged) { logged = k; fprintf(stderr, "[dinput] game mouse scale %.3f (Mouse speed option %.3f)\n", k, RF32(GAME_MOUSE_OPT)); }
     return k;
 }
 /* the event the game truncates to exactly u units: the smallest count whose scaled value reaches |u| */
@@ -384,7 +384,7 @@ static int yaw_follow(double rx, int *ux) {
         if (t < 0) t = 0;
         v = g_lv_v[i - 1] + t * (g_lv_v[i] - g_lv_v[i - 1]);
     }
-    float sp = RF32(0xa038a4u);
+    float sp = RF32(GAME_MOUSE_OPT);
     double uf = v / ((sp * 4.5 + 0.5) / 50.0);
     g_yf_sd += uf - floor(uf);   /* whole units only: carry the fraction (fine steps with the speed option at 0) */
     int u = (int)floor(uf);
@@ -404,9 +404,9 @@ static void camera_units(double rx, double ry, float k, int *dx, int *dy) {
         const char *e = getenv("RC_CAM");
         if (e) sscanf(e, "%f,%f,%f,%f,%f,%f", &g_cam[0], &g_cam[1], &g_cam[2], &g_cam[3], &g_cam[4], &g_cam[5]);
     }
-    float sp = RF32(0xa038a4u);
+    float sp = RF32(GAME_MOUSE_OPT);
     int ux;
-    if (g_force_sp >= 0 && RF32(0xa038a4u) != g_force_sp) memcpy(g_mem + 0xa038a4u, &g_force_sp, 4);   /* fine input steps */
+    if (g_force_sp >= 0 && RF32(GAME_MOUSE_OPT) != g_force_sp) memcpy(g_mem + GAME_MOUSE_OPT, &g_force_sp, 4);   /* fine input steps */
     if (g_ft_reads > 0) { rx += g_ft_counts; g_ft_reads--; }   /* fake swipe (yf_poll) */
     int follow = yaw_follow(rx, &ux);
     if (follow) g_qx = 0;   /* the camera's angle follows the finger (above) */
@@ -418,6 +418,7 @@ static void camera_units(double rx, double ry, float k, int *dx, int *dy) {
     g_qy += ry * g_cam[5];
     int uy = band_units(&g_qy, g_cam[2], g_cam[3], (sp + 1.f) / 20.f);
     *dx = count_for(ux, k); *dy = count_for(uy, k);
+    *dx *= GAME_CAM_X_SIGN;   /* Warrior Within turns the other way for the same mouse motion */
     g_gx = g_gy = 0;
 }
 

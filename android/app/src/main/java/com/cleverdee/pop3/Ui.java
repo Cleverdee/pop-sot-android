@@ -22,13 +22,14 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/* The launcher screens' look, in the spirit of the game's own front end: a charcoal night over a burning city
-   (an ember glow and a skyline of domes and towers), thin ornate gold frames, and classical serif small capitals
-   in burnished gold. Everything is drawn here; nothing is taken from the game's files. */
+/* The launcher screens' look, in the spirit of Warrior Within's own front end: a wall of cold dark stone with the
+   sand wraith's blood-red sigil, thin steel frames with red diamonds, and classical serif small capitals in
+   polished steel. Everything is drawn here; nothing is taken from the game's files. */
 final class Ui {
-    static final int WHITE = Color.rgb(250, 240, 220), SOFT = Color.rgb(226, 210, 180), DIM = Color.rgb(160, 138, 104);
-    static final int GOLD = Color.rgb(214, 168, 88), GOLD_LIGHT = Color.rgb(252, 228, 164), GOLD_DARK = Color.rgb(122, 80, 32);
-    static final int EMBER = Color.rgb(232, 112, 36);
+    /* Warrior Within: cold stone and steel with blood-red accents (the GOLD names are the metal of the frames) */
+    static final int WHITE = Color.rgb(236, 236, 240), SOFT = Color.rgb(196, 198, 206), DIM = Color.rgb(124, 128, 138);
+    static final int GOLD = Color.rgb(176, 182, 194), GOLD_LIGHT = Color.rgb(238, 242, 248), GOLD_DARK = Color.rgb(64, 68, 78);
+    static final int EMBER = Color.rgb(178, 26, 24);
     static final Typeface SERIF = Typeface.create(Typeface.SERIF, Typeface.NORMAL);
     static final Typeface SERIF_BOLD = Typeface.create(Typeface.SERIF, Typeface.BOLD);
 
@@ -49,7 +50,7 @@ final class Ui {
         TextView credit = new TextView(a);
         credit.setText("Made by Cleverdee");
         credit.setTextSize(11);
-        credit.setTextColor(Color.argb(160, 214, 168, 88));
+        credit.setTextColor(Color.argb(160, 176, 182, 194));
         credit.setTypeface(SERIF);
         credit.setLetterSpacing(0.12f);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -89,7 +90,7 @@ final class Ui {
         return sv;
     }
 
-    /* "PRINCE OF PERSIA" over "THE TWO THRONES" in gold serif small caps, with a small line under it */
+    /* "PRINCE OF PERSIA" over "WARRIOR WITHIN" in gold serif small caps, with a small line under it */
     static void title(LinearLayout col, String sub) {
         Context c = col.getContext();
         col.addView(new Logo(c), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 96)));
@@ -182,106 +183,118 @@ final class Ui {
 
         @Override public void draw(Canvas c) {
             int w = getBounds().width(), h = getBounds().height();
-            /* charcoal night, warming towards the burning city below */
-            mPaint.setShader(new LinearGradient(0, 0, 0, h, new int[] { Color.rgb(8, 7, 7), Color.rgb(16, 11, 9), Color.rgb(40, 18, 8),
-                                                                         Color.rgb(92, 36, 10) },
-                                                new float[] { 0f, 0.45f, 0.8f, 1f }, Shader.TileMode.CLAMP));
-            c.drawRect(0, 0, w, h, mPaint);
-            /* fire glow low on the horizon */
-            mPaint.setShader(new RadialGradient(w * 0.38f, h * 1.08f, Math.max(w, h) * 0.55f,
-                                                Color.argb(150, 240, 110, 30), Color.argb(0, 240, 110, 30), Shader.TileMode.CLAMP));
-            c.drawRect(0, 0, w, h, mPaint);
-            mPaint.setShader(new RadialGradient(w * 0.85f, h * 1.02f, Math.max(w, h) * 0.35f,
-                                                Color.argb(90, 255, 150, 50), Color.argb(0, 255, 150, 50), Shader.TileMode.CLAMP));
+            stone(c, w, h);
+            sigil(c, w, h);
+            dust(c, w, h);
+            /* shadow closing in from the edges */
+            mPaint.setShader(new RadialGradient(w * 0.5f, h * 0.42f, Math.max(w, h) * 0.75f,
+                                                new int[] { Color.argb(0, 0, 0, 0), Color.argb(90, 0, 0, 0), Color.argb(235, 0, 0, 0) },
+                                                new float[] { 0f, 0.55f, 1f }, Shader.TileMode.CLAMP));
             c.drawRect(0, 0, w, h, mPaint);
             mPaint.setShader(null);
-            /* drifting smoke */
-            mLine.setStyle(Paint.Style.STROKE);
-            mLine.setStrokeWidth(Math.max(1f, h / 300f));
-            for (int i = 0; i < 5; i++) {
-                float y0 = h * (0.5f + i * 0.08f), lift = h * (0.12f + i * 0.02f);
-                mPath.reset();
-                mPath.moveTo(-w * 0.1f, y0);
-                mPath.cubicTo(w * 0.3f, y0 - lift, w * 0.6f, y0 + lift * 0.5f, w * 1.1f, y0 - lift * 0.4f);
-                mLine.setColor(Color.argb(10 + i * 3, 255, 170, 90));
-                c.drawPath(mPath, mLine);
-            }
-            skyline(c, w, h);
-            embers(c, w, h);
             frame(c, w, h);
         }
 
-        /* the city: domes, towers and walls in silhouette along the bottom, rimmed by the fire behind */
-        private void skyline(Canvas c, int w, int h) {
-            float base = h, u = h / 100f;
-            mPath.reset();
-            mPath.moveTo(0, base);
-            float[][] parts = {   /* x (fraction of width), kind, width (u), height (u) */
-                { 0.00f, 0, 9, 7 }, { 0.05f, 2, 3, 20 }, { 0.09f, 1, 7, 12 }, { 0.17f, 0, 10, 9 }, { 0.26f, 2, 2.5f, 26 },
-                { 0.31f, 1, 11, 17 }, { 0.42f, 0, 14, 8 }, { 0.53f, 1, 8, 13 }, { 0.61f, 2, 3, 22 }, { 0.66f, 0, 9, 10 },
-                { 0.74f, 1, 13, 19 }, { 0.86f, 2, 2.5f, 16 }, { 0.90f, 0, 12, 8 }, { 1.00f, 0, 1, 6 } };
-            for (float[] p : parts) {
-                float x = p[0] * w, bw = p[2] * u, bh = p[3] * u;
-                mPath.lineTo(x, base - bh * 0.45f);
-                if (p[1] == 1) {          /* a domed hall */
-                    mPath.lineTo(x, base - bh * 0.6f);
-                    mPath.cubicTo(x, base - bh * 1.05f, x + bw * 0.5f, base - bh * 1.05f, x + bw * 0.5f, base - bh * 1.25f);
-                    mPath.cubicTo(x + bw * 0.5f, base - bh * 1.05f, x + bw, base - bh * 1.05f, x + bw, base - bh * 0.6f);
-                    mPath.lineTo(x + bw, base - bh * 0.45f);
-                } else if (p[1] == 2) {   /* a minaret */
-                    mPath.lineTo(x, base - bh * 0.85f);
-                    mPath.lineTo(x - bw * 0.25f, base - bh * 0.88f);
-                    mPath.lineTo(x + bw * 0.5f, base - bh * 1.05f);
-                    mPath.lineTo(x + bw * 1.25f, base - bh * 0.88f);
-                    mPath.lineTo(x + bw, base - bh * 0.85f);
-                    mPath.lineTo(x + bw, base - bh * 0.45f);
-                } else {                  /* a wall with crenels */
-                    float y = base - bh, step = bw / 5f;
-                    mPath.lineTo(x, y);
-                    for (int k = 0; k < 5; k++) {
-                        mPath.lineTo(x + step * k + step * 0.5f, y);
-                        mPath.lineTo(x + step * k + step * 0.5f, y + u * 0.8f);
-                        mPath.lineTo(x + step * (k + 1), y + u * 0.8f);
-                        mPath.lineTo(x + step * (k + 1), y);
+        /* a wall of rough-cut blocks in cold grey-blue, courses of uneven length */
+        private void stone(Canvas c, int w, int h) {
+            mPaint.setStyle(Paint.Style.FILL);
+            mPaint.setShader(new LinearGradient(0, 0, 0, h, new int[] { Color.rgb(20, 22, 26), Color.rgb(34, 37, 43), Color.rgb(16, 17, 20) },
+                                                new float[] { 0f, 0.5f, 1f }, Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, w, h, mPaint);
+            mPaint.setShader(null);
+            java.util.Random r = new java.util.Random(11);
+            float course = Math.max(mDp * 34, h / 9f), joint = Math.max(1f, mDp * 1.6f);
+            mLine.setStyle(Paint.Style.STROKE);
+            for (float y = -course * 0.3f; y < h; y += course) {
+                float x = -r.nextFloat() * course * 1.5f;
+                while (x < w) {
+                    float bw = course * (1.4f + r.nextFloat() * 1.6f);
+                    int g = 30 + r.nextInt(16), tone = r.nextInt(6);
+                    mPaint.setShader(new LinearGradient(0, y, 0, y + course, Color.rgb(g + 8, g + 10 + tone, g + 15 + tone),
+                                                        Color.rgb(g - 6, g - 5, g - 2), Shader.TileMode.CLAMP));
+                    c.drawRect(x + joint, y + joint, x + bw - joint, y + course - joint, mPaint);
+                    mPaint.setShader(null);
+                    /* worn edges: a faint light line on top, a dark one below */
+                    mLine.setStrokeWidth(Math.max(1f, mDp * 0.8f));
+                    mLine.setColor(Color.argb(40, 200, 210, 225));
+                    c.drawLine(x + joint * 2, y + joint * 1.5f, x + bw - joint * 2, y + joint * 1.5f, mLine);
+                    mLine.setColor(Color.argb(120, 0, 0, 0));
+                    c.drawLine(x + joint * 2, y + course - joint * 1.5f, x + bw - joint * 2, y + course - joint * 1.5f, mLine);
+                    if (r.nextInt(4) == 0) {   /* the odd crack */
+                        mPath.reset();
+                        float cx = x + bw * (0.2f + r.nextFloat() * 0.6f), cy = y + joint * 2;
+                        mPath.moveTo(cx, cy);
+                        for (int k = 0; k < 4; k++) { cx += (r.nextFloat() - 0.5f) * course * 0.5f; cy += course * 0.22f; mPath.lineTo(cx, cy); }
+                        mLine.setColor(Color.argb(90, 0, 0, 0));
+                        c.drawPath(mPath, mLine);
                     }
-                    mPath.lineTo(x + bw, base - bh * 0.45f);
+                    x += bw;
                 }
             }
-            mPath.lineTo(w, base);
-            mPath.close();
-            mPaint.setShader(null);
-            mPaint.setStyle(Paint.Style.FILL);
-            mPaint.setColor(Color.rgb(12, 7, 5));
-            c.drawPath(mPath, mPaint);
-            mLine.setStrokeWidth(Math.max(1f, mDp * 0.8f));
-            mLine.setColor(Color.argb(90, 255, 140, 50));
-            c.drawPath(mPath, mLine);
         }
 
-        /* sparks rising from the fire */
-        private void embers(Canvas c, int w, int h) {
+        /* the sand wraith's sigil in old blood on the wall: rings of runes, six seals, a three-armed spiral */
+        private void sigil(Canvas c, int w, int h) {
+            float cx = w * 0.5f, cy = h * 0.5f, R = Math.min(w, h) * 0.46f;
+            mLine.setStyle(Paint.Style.STROKE);
+            mLine.setColor(Color.argb(80, 150, 18, 16));
+            mLine.setStrokeWidth(Math.max(1f, R * 0.012f));
+            c.drawCircle(cx, cy, R, mLine);
+            c.drawCircle(cx, cy, R * 0.86f, mLine);
+            c.drawCircle(cx, cy, R * 0.42f, mLine);
+            java.util.Random r = new java.util.Random(5);
+            mLine.setStrokeWidth(Math.max(1f, R * 0.009f));
+            for (int k = 0; k < 64; k++) {   /* runes: short angular strokes between the outer rings */
+                double a = k * Math.PI * 2 / 64;
+                float r0 = R * 0.89f, r1 = R * (0.94f + r.nextFloat() * 0.04f);
+                float ca = (float) Math.cos(a), sa = (float) Math.sin(a), tx = -sa * R * 0.02f, ty = ca * R * 0.02f;
+                boolean flip = r.nextBoolean();
+                c.drawLine(cx + ca * r0, cy + sa * r0, cx + ca * r1 + (flip ? tx : -tx), cy + sa * r1 + (flip ? ty : -ty), mLine);
+            }
+            mPaint.setStyle(Paint.Style.FILL);
+            for (int k = 0; k < 6; k++) {   /* six seals on the middle ring */
+                double a = -Math.PI / 2 + k * Math.PI / 3;
+                float sx = cx + (float) Math.cos(a) * R * 0.64f, sy = cy + (float) Math.sin(a) * R * 0.64f;
+                mPaint.setColor(Color.argb(45, 150, 18, 16));
+                c.drawCircle(sx, sy, R * 0.13f, mPaint);
+                c.drawCircle(sx, sy, R * 0.13f, mLine);
+            }
+            mLine.setStrokeWidth(Math.max(1f, R * 0.03f));
+            mLine.setStrokeCap(Paint.Cap.ROUND);
+            for (int k = 0; k < 3; k++) {   /* three spiral arms */
+                mPath.reset();
+                double a0 = k * Math.PI * 2 / 3;
+                for (int t = 0; t <= 40; t++) {
+                    double a = a0 + t * 0.07, rr = R * 0.36f * (1 - t / 46.0);
+                    float px = cx + (float) (Math.cos(a) * rr), py = cy + (float) (Math.sin(a) * rr);
+                    if (t == 0) mPath.moveTo(px, py); else mPath.lineTo(px, py);
+                }
+                c.drawPath(mPath, mLine);
+            }
+            mLine.setStrokeCap(Paint.Cap.BUTT);
+        }
+
+        /* sand hanging in the air */
+        private void dust(Canvas c, int w, int h) {
             java.util.Random r = new java.util.Random(7);
             mPaint.setStyle(Paint.Style.FILL);
-            for (int i = 0; i < 46; i++) {
-                float up = r.nextFloat();
-                float x = r.nextFloat() * w, y = h - h * 0.7f * up * up;   /* most of them low, near the fire */
-                float rad = mDp * (0.6f + r.nextFloat() * 1.4f);
-                int a = (int) ((60 + r.nextInt(150)) * (1f - up * 0.6f));
-                mPaint.setColor(Color.argb(a, 255, 150 + r.nextInt(80), 60));
+            for (int i = 0; i < 70; i++) {
+                float x = r.nextFloat() * w, y = r.nextFloat() * h, rad = mDp * (0.5f + r.nextFloat() * 1.1f);
+                mPaint.setColor(Color.argb(30 + r.nextInt(70), 214, 204, 186));
                 c.drawCircle(x, y, rad, mPaint);
             }
         }
 
-        /* a thin double gold frame around the screen with diamonds at the corners */
+        /* a thin double steel frame around the screen with red diamonds at the corners */
         private void frame(Canvas c, int w, int h) {
             float m = mDp * 10, m2 = mDp * 14, cr = mDp * 4;
             mLine.setStrokeWidth(Math.max(1f, mDp * 1f));
-            mLine.setColor(Color.argb(150, 214, 168, 88));
+            mLine.setColor(Color.argb(150, 176, 182, 194));
             c.drawRect(m, m, w - m, h - m, mLine);
             mLine.setStrokeWidth(Math.max(1f, mDp * 0.6f));
-            mLine.setColor(Color.argb(80, 214, 168, 88));
+            mLine.setColor(Color.argb(80, 176, 182, 194));
             c.drawRect(m2, m2, w - m2, h - m2, mLine);
-            mPaint.setColor(Color.argb(200, 230, 186, 104));
+            mPaint.setColor(Color.argb(220, 178, 26, 24));
             diamond(c, m, m, cr, mPaint);
             diamond(c, w - m, m, cr, mPaint);
             diamond(c, m, h - m, cr, mPaint);
@@ -308,14 +321,14 @@ final class Ui {
         }
 
         private Shader gold(float top, float bottom) {
-            return new LinearGradient(0, top, 0, bottom, new int[] { GOLD_LIGHT, Color.rgb(232, 186, 100), GOLD_DARK, Color.rgb(200, 150, 70) },
+            return new LinearGradient(0, top, 0, bottom, new int[] { Color.rgb(250, 252, 255), Color.rgb(196, 202, 212), Color.rgb(70, 74, 84), Color.rgb(170, 176, 188) },
                                       new float[] { 0f, 0.45f, 0.62f, 1f }, Shader.TileMode.CLAMP);
         }
 
         @Override protected void onDraw(Canvas c) {
             float w = getWidth(), h = getHeight();
             /* PRINCE OF PERSIA, as wide as fits */
-            String a = "PRINCE OF PERSIA", b = "THE TWO THRONES";
+            String a = "PRINCE OF PERSIA", b = "WARRIOR WITHIN";
             float size = h * 0.4f;
             mText.setLetterSpacing(0.08f);
             mText.setShader(null);
@@ -326,16 +339,16 @@ final class Ui {
             smallCaps(c, a, (w - wa) / 2f, base, size, mText);
             /* the ornament: two fading gold lines meeting at a diamond */
             float ry = h * 0.58f, half = wa * 0.42f, cx = w / 2f;
-            mRule.setShader(new LinearGradient(cx - half, 0, cx, 0, Color.argb(0, 214, 168, 88), GOLD, Shader.TileMode.CLAMP));
+            mRule.setShader(new LinearGradient(cx - half, 0, cx, 0, Color.argb(0, 176, 182, 194), GOLD, Shader.TileMode.CLAMP));
             c.drawRect(cx - half, ry - 0.6f, cx - size * 0.25f, ry + 0.6f + h * 0.006f, mRule);
-            mRule.setShader(new LinearGradient(cx, 0, cx + half, 0, GOLD, Color.argb(0, 214, 168, 88), Shader.TileMode.CLAMP));
+            mRule.setShader(new LinearGradient(cx, 0, cx + half, 0, GOLD, Color.argb(0, 176, 182, 194), Shader.TileMode.CLAMP));
             c.drawRect(cx + size * 0.25f, ry - 0.6f, cx + half, ry + 0.6f + h * 0.006f, mRule);
             mRule.setShader(null);
             mRule.setColor(GOLD_LIGHT);
             diamond(c, cx, ry, size * 0.14f, mRule);
             mRule.setColor(EMBER);
             diamond(c, cx, ry, size * 0.06f, mRule);
-            /* THE TWO THRONES, smaller and wider spaced */
+            /* WARRIOR WITHIN, smaller and wider spaced */
             float sb = size * 0.48f;
             mText.setLetterSpacing(0.38f);
             mText.setShader(null);
@@ -399,9 +412,9 @@ final class Ui {
             float in2 = inset + d * 3.5f;
             panel(mInner, in2, in2, w - in2, h - in2);
             boolean lit = mDown || isFocused();
-            if (lit) mFill.setShader(new LinearGradient(0, 0, 0, h, new int[] { Color.rgb(255, 214, 130), Color.rgb(226, 132, 40), Color.rgb(150, 60, 14) },
+            if (lit) mFill.setShader(new LinearGradient(0, 0, 0, h, new int[] { Color.rgb(214, 60, 52), Color.rgb(150, 20, 18), Color.rgb(78, 8, 8) },
                                                          null, Shader.TileMode.CLAMP));
-            else mFill.setShader(new LinearGradient(0, 0, 0, h, Color.argb(225, 30, 22, 17), Color.argb(235, 10, 7, 6), Shader.TileMode.CLAMP));
+            else mFill.setShader(new LinearGradient(0, 0, 0, h, Color.argb(230, 34, 37, 43), Color.argb(240, 10, 11, 13), Shader.TileMode.CLAMP));
             c.drawPath(mPath, mFill);
             mFill.setShader(null);
             /* the gold frame: a stronger outer line, a fine inner one */
@@ -410,17 +423,17 @@ final class Ui {
             c.drawPath(mPath, mEdge);
             mEdge.setShader(null);
             mEdge.setStrokeWidth(Math.max(1f, d * 0.6f));
-            mEdge.setColor(lit ? Color.argb(160, 90, 40, 10) : Color.argb(110, 214, 168, 88));
+            mEdge.setColor(lit ? Color.argb(170, 255, 190, 180) : Color.argb(110, 176, 182, 194));
             c.drawPath(mInner, mEdge);
             /* diamonds at the points */
-            mFill.setColor(lit ? Color.rgb(90, 36, 8) : GOLD);
+            mFill.setColor(lit ? Color.rgb(250, 236, 232) : EMBER);
             diamond(c, in2 + h * 0.2f, h / 2f, h * 0.1f, mFill);
             diamond(c, w - in2 - h * 0.2f, h / 2f, h * 0.1f, mFill);
             int alpha = isEnabled() ? 255 : 110;
             float size = h * (mSmall ? 0.36f : 0.38f);
             mText.setLetterSpacing(0.14f);
             mText.setTextSize(size);
-            int fg = lit ? Color.argb(alpha, 40, 16, 4) : Color.argb(alpha, 246, 222, 160);
+            int fg = lit ? Color.argb(alpha, 255, 246, 244) : Color.argb(alpha, 226, 230, 238);
             mText.setColor(fg);
             float ty = h / 2f - (mText.descent() + mText.ascent()) / 2f + h * 0.02f;
             mText.setTextAlign(Paint.Align.LEFT);
@@ -430,7 +443,7 @@ final class Ui {
             } else {
                 smallCaps(c, mLabel, h * 0.75f, ty, size, mText);
                 mText.setTextAlign(Paint.Align.RIGHT);
-                mText.setColor(lit ? fg : Color.argb(alpha, 232, 112, 36));
+                mText.setColor(lit ? fg : Color.argb(alpha, 210, 52, 44));
                 c.drawText(mNote, w - h * 0.75f, ty, mText);
                 mText.setTextAlign(Paint.Align.LEFT);
             }

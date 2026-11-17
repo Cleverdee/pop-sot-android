@@ -16,9 +16,9 @@ void input_mouse_move(int dx, int dy);
 void input_mouse_button(int b, int down);
 uint32_t host_video_width(void), host_video_height(void);
 
-#define CURSOR_TEX 0xb598ffc5u
-#define CURSOR_HOT_X 2.f      /* the dagger's tip, from the sprite's top-left corner */
-#define CURSOR_HOT_Y 3.f
+#define CURSOR_TEX GAME_CURSOR_TEX
+#define CURSOR_HOT_X GAME_CURSOR_HOT_X   /* the pointer's tip, from the sprite's top-left corner */
+#define CURSOR_HOT_Y GAME_CURSOR_HOT_Y
 
 static volatile int g_cursor_frames = 1000;   /* frames since the cursor was last drawn (large = not in a menu) */
 static float g_cx, g_cy;                      /* its tip, back-buffer pixels */
@@ -30,6 +30,7 @@ static int g_seek_frames, g_settle;
 static float g_last_cx, g_last_cy;
 
 static int ui_menu(void);
+static uint32_t page_crc(uint32_t page);
 
 static void seek_step(void) {
     if (g_seek == 2) { input_mouse_button(0, 0); g_seek = 0; return; }
@@ -67,9 +68,9 @@ void gamephase_frame(const uint32_t *hashes, const float *xy, uint32_t n) {
         static double last;
         if (host_seconds() - last > 2.0) {
             last = host_seconds();
-            uint32_t base = R32(0xe6d83cu), b = base ? R32(base + 0x14) : 0, e = base ? R32(base + 0x18) : 0;
+            uint32_t base = R32(GAME_UI_PAGES), b = base ? R32(base + 0x14) : 0, e = base ? R32(base + 0x18) : 0;
             fprintf(stderr, "[pages] base %08x count %d id9d84ec %08x:", base, b ? (int)(e - b) / 8 : -1, R32(0x9d84ecu));
-            for (uint32_t q = b; b && q < e && q < b + 8 * 8; q += 8) fprintf(stderr, " %08x/%08x crc %08x", R32(q), R32(q + 4), R32(q) ? R32(R32(q) + 0x3c) : 0);
+            for (uint32_t q = b; b && q < e && q < b + 8 * 8; q += 8) fprintf(stderr, " %08x/%08x crc %08x", R32(q), R32(q + 4), R32(q) ? page_crc(R32(q)) : 0);
             fprintf(stderr, " -> %s\n", ui_menu() ? "menu" : "play");
         }
     }
@@ -94,7 +95,9 @@ static int menu_page(uint32_t crc) {
         "P_LoadSavedGame", "P_StartNewGame", "P_SpecialLoad", "P_Options", "P_GameOptions", "P_ControlsMenu",
         "P_ControlsGampad", "P_SoundsMenu", "P_VideoMenu", "P_VideoMenuAdv", "P_VideoAdvanced", "P_ExtraFeatures",
         "P_ArtworkGallery", "P_ArtworkCharacterGallery", "P_ArtworkIllustrationGallery", "P_GenericGallery", "P_Credits",
-        "P_InGameMenu", "P_PreInGameMenu", "P_SaveGame", "P_SaveConfirmation", "P_GameOver", "P_MessageBox" };
+        "P_InGameMenu", "P_PreInGameMenu", "P_SaveGame", "P_SaveConfirmation", "P_GameOver", "P_MessageBox",
+        /* Warrior Within's extras */
+        "P_VideoGallery", "P_Illustrations", "P_Environments", "P_Characters", "P_WeaponGallery" };
     enum { N = sizeof names / sizeof *names };
     static uint32_t h[N];
     static int init;
@@ -102,14 +105,66 @@ static int menu_page(uint32_t crc) {
     for (int i = 0; i < N; i++) if (h[i] == crc) return 1;
     return 0;
 }
+static int combo_page(uint32_t crc) {   /* P_Combo_1..10: play pages both games have */
+    static uint32_t h[10];
+    if (!h[0]) for (int i = 0; i < 10; i++) { char n[16]; snprintf(n, sizeof n, "P_Combo_%d", i + 1); h[i] = crc32s(n); }
+    for (int i = 0; i < 10; i++) if (h[i] == crc) return 1;
+    return 0;
+}
+/* Where a page object keeps its name: Two Thrones has the CRC at +0x3c; other builds of the engine lay the object
+   out differently, so the first page seen is searched for a known page name, as a CRC or as a pointer to the
+   string (RC_LOG_PAGES logs what was found). */
+/* Found as a path: [page + off1] (dereferenced when off2 >= 0, then + off2), holding the name as kind 0 a CRC-32,
+   1 an inline string (MSVC 7.1 std::string keeps short ones in place), 2 a pointer to the string. */
+static int g_off1 = -1, g_off2 = -1, g_kind;
+static int ptr_ok(uint32_t v) { return v >= 0x10000u && v < 0xf0000000u; }
+static uint32_t str_crc(uint32_t a) {
+    char n[64]; int k = 0;
+    if (R8(a) != 'P' || R8(a + 1) != '_') return 0;
+    while (k < 63 && R8(a + k) >= 0x20 && R8(a + k) < 0x7f) { n[k] = (char)R8(a + k); k++; }
+    n[k] = 0;
+    return crc32s(n);
+}
+static uint32_t name_at(uint32_t a, int kind) {
+    if (kind == 0) return R32(a);
+    if (kind == 1) return str_crc(a);
+    uint32_t v = R32(a);
+    return ptr_ok(v) ? str_crc(v) : 0;
+}
+static int known(uint32_t crc) { return crc && (menu_page(crc) || combo_page(crc)); }
+static uint32_t page_crc(uint32_t page) {
+    if (g_off1 < 0) {
+        static int tries;
+        for (int o1 = 0; o1 < 0x100 && g_off1 < 0; o1 += 4)
+            for (int kind = 0; kind < 3 && g_off1 < 0; kind++) {
+                if (known(name_at(page + o1, kind))) { g_off1 = o1; g_off2 = -1; g_kind = kind; break; }
+                uint32_t p = R32(page + o1);
+                if (!ptr_ok(p)) continue;
+                for (int o2 = 0; o2 < 0x40; o2 += 4)
+                    if (known(name_at(p + o2, kind))) { g_off1 = o1; g_off2 = o2; g_kind = kind; break; }
+            }
+        if (g_off1 >= 0)
+            fprintf(stderr, "[pages] page name at +0x%x, deref then +0x%x (-1: none), %s\n", g_off1, g_off2,
+                    g_kind == 0 ? "CRC-32" : g_kind == 1 ? "inline string" : "string pointer");
+        else if (tries++ < 3 && getenv("RC_LOG_PAGES")) {   /* not found: dump the object for a look */
+            fprintf(stderr, "[pages] page %08x:", page);
+            for (int o = 0; o < 0x80; o += 4) fprintf(stderr, " %08x", R32(page + o));
+            fprintf(stderr, "\n");
+        }
+        if (g_off1 < 0) return 0;
+    }
+    uint32_t a = page + g_off1;
+    if (g_off2 >= 0) { uint32_t p = R32(a); if (!ptr_ok(p)) return 0; a = p + g_off2; }
+    return name_at(a, g_kind);
+}
 static int ui_menu(void) {
-    uint32_t base = R32(0xe6d83cu);
+    uint32_t base = R32(GAME_UI_PAGES);
     if (!base) return 0;
     uint32_t b = R32(base + 0x14), e = R32(base + 0x18);
     if (!b || e <= b || e - b > 64 * 8) return 0;
     for (uint32_t q = b; q < e; q += 8) {
         uint32_t page = R32(q);
-        if (page && menu_page(R32(page + 0x3c))) return 1;
+        if (page && menu_page(page_crc(page))) return 1;
     }
     return 0;
 }

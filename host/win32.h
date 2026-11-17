@@ -12,6 +12,22 @@
 #else
 #include "profile.h"
 #endif
+#ifndef GAME_UI_PAGES   /* Two Thrones (POP3.EXE); other games define these in their profile */
+#define GAME_UI_PAGES     0x00e6d83cu
+#define GAME_MOUSE_OPT    0x00a038a4u
+#define GAME_MOUSE_ADD    0x0098108cu
+#define GAME_MOUSE_MUL    0x00980810u
+#define GAME_POOL_WORKER  0x007e6cc0u
+#define GAME_POOL_VTABLE  0x0098b6ccu
+#endif
+#ifndef GAME_CURSOR_TEX   /* Two Thrones' dagger cursor: texture fingerprint and tip */
+#define GAME_CURSOR_TEX   0xb598ffc5u
+#define GAME_CURSOR_HOT_X 2.f
+#define GAME_CURSOR_HOT_Y 3.f
+#endif
+#ifndef GAME_CAM_X_SIGN
+#define GAME_CAM_X_SIGN 1
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,61 +1,46 @@
-# Prince of Persia: The Two Thrones in the browser
+# Prince of Persia: Warrior Within for Android
 
-A static recompilation of the PC game: `POP3.EXE` is translated from x86 to C (Ghidra function list +
-`translator/x86toc.py`), compiled, and run on a small Windows API layer (`host/`): kernel32/user32, DirectInput 8,
-DirectSound, a Bink stub and **Direct3D 9 on WebGPU** (a recorder/executor renderer). It runs natively on macOS and, built
-with Emscripten, in the browser.
+A native Android port of the PC game, made by static recompilation: the game's `pop2.exe` is translated from
+x86 to C (Ghidra function list + `translator/x86toc.py`), compiled for arm64, and run on a small Windows API layer
+(`host/`): kernel32/user32, DirectInput 8, DirectSound, Bink movies through FFmpeg, and **Direct3D 9 on Vulkan**
+(wgpu-native). No emulator, no Wine. It shares its code with the
+[Two Thrones port](https://github.com/Cleverdee/pop-t2t-android) (same Jade engine); the game-specific parts are
+in `android/profile_pop2.h`.
 
-> **Disclaimer.** This is an independent, non-commercial technical experiment (static recompilation, a Windows API layer and a WebGPU
-> renderer). It is **not affiliated with, endorsed by or connected to Ubisoft**; *Prince of Persia* and *The Two Thrones* are
-> trademarks and copyrighted works of Ubisoft Entertainment. **This repository contains no game files, no game assets and no code
-> taken from the game's executable or data**; the generated C, the executable and the function list are gitignored and never
-> published. It works only with a **genuine copy of the game that you legitimately own**, which you supply yourself and which stays on
-> your computer (in your browser's private storage). It is **not for piracy and not for distributing the game or any of its content**:
-> do not host, share or serve game files to others, and do not use this project to do so. The software is provided as is, for
-> research and education, under the MIT license (covering only the original code in this repository).
+> **Disclaimer.** This is an independent, non-commercial technical project. It is **not affiliated with, endorsed
+> by or connected to Ubisoft**; *Prince of Persia* and *Warrior Within* are trademarks and copyrighted works of
+> Ubisoft Entertainment. **This repository contains no game files, no game assets and no code taken from the
+> game's executable or data**: the generated C, the executable and the function list are gitignored and never
+> published. The app works only with a **genuine copy of the game that you own**, which you copy to your phone
+> yourself. Do not share game files. MIT licence, covering only the original code here.
 
-**No game files or game-derived code live in this repository.** You need your own legitimately obtained copy of the game
-(the executable is `POP3.EXE`, not the small `PrinceOfPersia.exe` launcher). Generated C, binaries and the function list are
-gitignored.
+## Playing
+
+1. Install the APK from the [releases](../../releases).
+2. Copy your installed PC game folder (GOG: `Prince of Persia Warrior Within`) to the phone, or make a .zip of it.
+   The app needs the **unpacked** `pop2.exe`: GOG's is UPX-packed, so run `upx -d pop2.exe` on the PC first.
+3. Open the app and pick the folder or the .zip. The files are copied into the app; saves are kept across updates.
+
+Touch controls: a floating stick on the left, the game's buttons on the right (attack, jump, wall run/block,
+secondary weapon, rewind, look, camera), swipe the picture to turn the camera, and tap menu items to select them.
+A physical controller works too. **Resolution** on the start screen picks *Sharp* (540 lines) or *Fast* (432).
+
+## Building
+
+Windows, PowerShell. The toolchain (Android SDK + NDK r27, JDK 21, SDL2, wgpu-native, Ghidra 12) is the one the
+Cricket 07 port fetches; JDK 25 runs Ghidra.
+
+1. `upx -d pop2.exe`, copy it to `..\work\pop2.exe`.
+2. Ghidra headless with the scripts in `ghidra/` (`ExportFunctions.java`, plus `NameFromAsserts.java` and
+   `RecoverRttiClasses.java` for names) → `..\work\functions.json`.
+3. `android\build.ps1` translates (`translator/x86toc.py --all --per-file 300`, then `tools/patch_generated.py`)
+   and builds the APK into `android\output\` (first build 20-60 min). `-Install` installs it over USB.
+
+Debug switches go in `Android/data/com.cleverdee.popww/files/env.txt` (one `NAME=value` per line), e.g.
+`RC_LOG_FPS=1`, `RC_SHOW_FPS=1`, `RC_GPU_TIMES=1`, `RC_LOG_PAGES=1`; read the log with `adb logcat -s cricket07`.
 
 ## Status
 
-Playable through the first level, natively on macOS: menus, loading, the intro, the ship-deck level with sky, sea and
-characters, keyboard control (W/A/S/D, Space to jump), about 26 fps. Menus are English (`RC_LANGUAGE`, default `ENGLISH`;
-voices stay in the installed language). Audio goes through CoreAudio (3D positioning, soft limiter, latency-correct play
-cursor). Not done or not verified: combat and gamepad, the real Bink movies (a fake 2-frame movie is returned), a full game
-run in a real browser, and performance (the CPU vertex-shader interpreter is the hot spot). See `plan.md` for the detailed
-log, findings and every debug switch (`RC_*`).
-
-## Build and run (macOS)
-
-Toolchain: Python 3 with `pefile` and `capstone` (`python3 -m venv .venv && .venv/bin/pip install pefile capstone`),
-Ghidra 12+ (needs JDK 25+) for the function list, SDL2, wgpu-native in `third_party/wgpu`, Emscripten for the browser build.
-
-```
-ghidra/export.sh <POP3.EXE>                       # -> work/functions.json (your copy of the game; not committed)
-PY=$PWD/.venv/bin/python PROFILE=work/profile.h ./build.sh <game folder>/POP3.EXE work/functions.json
-build/recomp <game folder>                        # native: opens the game window
-```
-
-`HOST_OPT` sets the optimisation level of `host/` (default `-O2`). The first run mirrors the game's profile and save data
-under `userdata/`.
-
-## Browser
-
-```
-OPT=-O1 PROFILE=work/profile.h ./build_web.sh     # -> build_web/www and build_web/node
-./make_site.sh                                    # -> site/ (index.html, loader.js, build/recomp.{js,wasm}; no game files)
-cd site && python3 serve.py                       # http://localhost:8007/  (choose your game folder in the page)
-cd site && python3 serve.py --game "<your game folder>"   # local dev: the page copies it itself, no file dialog
-```
-
-Open the page and choose your own game folder; the browser copies it into its private storage (OPFS) once and runs
-`POP3.EXE`. The server must send the cross-origin-isolation headers (`serve.py` does); threads need SharedArrayBuffer.
-Controls: W/A/S/D move, Space jump, Enter select, Alt+Enter fullscreen. The game runs at 1920x1080 (`RC_RESOLUTION=WxH` to change) with a 30 fps cap (`RC_FPS`).
-
-## Debugging
-
-Useful environment switches (full list in `plan.md`): `RC_LOG`, `RC_LOG_FPS`, `RC_SCREENSHOTS="frame,..."`, `RC_CAPTURE=frame`,
-`RC_INPUT="200:key=1c,..."` (scripted input by frame), `RC_SDL_PUSH=1` (synthetic key events through the real event path),
-`RC_NO_CULL`, `RC_DUMP_DARE`, `RC_LOG_SYNC`, `RC_LANGUAGE`. Keep logs short: `RC_LOG_IMPORTS` can write gigabytes.
+Boots, plays the movies (with Skip), creates profiles, menus with tap-to-select, gameplay with touch controls at
+about 60 FPS in quiet scenes and 35-50 in big fights (Galaxy A17). Known gaps: the camera doesn't follow the finger
+as closely as in the Two Thrones port, tutorial prompts show gamepad button names, and busy fights are CPU-bound.

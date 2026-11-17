@@ -1236,7 +1236,11 @@ class Program:
                 return False
             prev = self.img[t - self.base - 1]
             prev3 = self.img[t - self.base - 3]
-            return prev in (0xCC, 0x90, 0xC3) or prev3 == 0xC2
+            # (or right after the previous function's tail jump: WW's 0x7f7ec0, stored as a callback by
+            # `mov [esi+0x3c], 0x7f7ec0`, follows a `jmp rel32` with no padding)
+            prev5 = self.img[t - self.base - 5]
+            prev2 = self.img[t - self.base - 2]
+            return prev in (0xCC, 0x90, 0xC3) or prev3 == 0xC2 or prev5 == 0xE9 or prev2 == 0xEB
 
         md = Cs(CS_ARCH_X86, CS_MODE_32)
         md.detail = True
@@ -1384,9 +1388,39 @@ class Program:
                             walk.append(t)
                     if m in ("ret", "retn", "jmp", "int3"):
                         break
-        ordered = sorted(self.entries | cands)
+        # A data word that happens to equal an address inside unowned code passes unowned_code() even when it
+        # lands in the middle of an instruction (WW: 0x8b9a10 inside a static initializer's 10-byte mov at
+        # 0x8b9a08), and splitting the body there leaves a fall-through to an address nothing translated.
+        # Drop a candidate when the code before it runs straight across it without an instruction boundary.
+        strong = cross | {t for t in cands if t in insn_starts}
+        kept = sorted(self.entries | cands)
+        dropped = set()
+        for i in range(1, len(kept)):
+            t = kept[i]
+            if t not in cands or t in strong:
+                continue
+            j = i - 1
+            while kept[j] in dropped:
+                j -= 1
+            p = kept[j]
+            landed, flows = False, True
+            for ins in md.disasm(self.code(p, t + 16), p):
+                if ins.address >= t:
+                    landed = ins.address == t
+                    break
+                if ins.mnemonic in ("ret", "retn", "jmp", "int3"):
+                    flows = False
+                    break
+            else:
+                flows = False
+            if flows and not landed:
+                dropped.add(t)
+        # keep them as entries (something may still call them), but don't end the previous body there
+        print("pointer entries inside another body's instruction: %d" % len(dropped), file=sys.stderr)
+        ordered = sorted(self.entries | (cands - dropped))
         for t in cands:
-            nxt = ordered[ordered.index(t) + 1] if t != ordered[-1] else thi
+            k = bisect.bisect_right(ordered, t)
+            nxt = ordered[k] if k < len(ordered) else thi
             self.functions[t] = {"entry": t, "name": f"PTR_{t:08x}", "ranges": [[t, nxt]]}
         self.entries |= cands
         self.pointer_entries = len(cands)

@@ -61,6 +61,7 @@ typedef struct Movie {
     double last_a, last_aw;
     /* stats */
     int wrapped;             /* BinkNextFrame went past the last frame: rewind at the next BinkDoFrame */
+    int skipping;            /* the player pressed Skip: report the last frame, decode nothing more */
     uint32_t shown, copies, late, ndec;
     double t_first;
     double dec_time, copy_time;
@@ -215,7 +216,17 @@ static Movie *open_movie(const char *host, const char *name, uint32_t flags) {
     Movie *m = calloc(1, sizeof *m);
     snprintf(m->name, sizeof m->name, "%s", name);
     m->vs = -1;
-    if (avformat_open_input(&m->fmt, host, av_find_input_format("bink"), NULL) < 0) {
+    /* Warrior Within's movies start with Ubisoft's 32-byte "UBV" header in front of the BIKi stream */
+    AVDictionary *opt = NULL;
+    FILE *hf = fopen(host, "rb");
+    if (hf) {
+        char sig[3] = { 0 };
+        if (fread(sig, 1, 3, hf) == 3 && !memcmp(sig, "UBV", 3)) av_dict_set(&opt, "skip_initial_bytes", "32", 0);
+        fclose(hf);
+    }
+    int err = avformat_open_input(&m->fmt, host, av_find_input_format("bink"), &opt);
+    av_dict_free(&opt);
+    if (err < 0) {
         fprintf(stderr, "[bink] can't open %s (%s)\n", name, host);
         free(m);
         return NULL;
@@ -329,7 +340,7 @@ W(BinkDoFrame) {
             m->base = 0; m->last_a = 0; m->last_aw = 0;
             m->t0 = host_seconds(); if (m->paused) m->pause_at = m->t0;
         }
-        decode_to(m, f);
+        if (!m->skipping) decode_to(m, f);
         m->shown++;
         if (movie_time(m) > frame_time(m, f) + 0.1) m->late++;
     }
@@ -343,7 +354,8 @@ W(BinkNextFrame) {
     if (m) {
         uint32_t f = R32(m->g + 12);
         W32(m->g + 16, f);
-        if (f >= m->frames) { m->wrapped = 1; W32(m->g + 12, 1); }   /* Bink loops: past the last frame comes frame 1 */
+        if (m->skipping) { W32(m->g + 16, m->frames); W32(m->g + 12, m->frames);   /* the game ends a movie when LastFrameNum == Frames */ }
+        else if (f >= m->frames) { m->wrapped = 1; W32(m->g + 12, 1); }   /* Bink loops: past the last frame comes frame 1 */
         else W32(m->g + 12, f + 1);
     }
     pthread_mutex_unlock(&g_lock);
@@ -356,7 +368,7 @@ W(BinkWait) {
     Movie *m = find(ARG(0));
     int r = 0;
     if (m) {
-        if (!m->started) { pump(m); pthread_mutex_unlock(&g_lock); RET(1, 0); }
+        if (!m->started || m->skipping) { if (!m->skipping) pump(m); pthread_mutex_unlock(&g_lock); RET(1, 0); }
         uint32_t f = R32(m->g + 12);
         if (m->wrapped) f = m->frames + 1;   /* frame 1 of the next loop comes one frame after the last */
         else if (f == m->decoded) f++;       /* the current frame is already out: wait for the next one */
@@ -555,6 +567,20 @@ W(BinkCopyToBuffer) {
 
 /* any movie open (logos, loading screens, cinematics): the Android touch overlay hides its game controls then
    (android/host/pop3_android_stubs.c gamephase_current) */
+/* Skip (touch overlay): every open movie jumps to its last frame, so the game's own end-of-movie check ends it.
+   Called from the UI thread. */
+static volatile int g_skip;
+void bink_skip(void) {
+    pthread_mutex_lock(&g_lock);
+    for (Movie *m = g_movies; m; m = m->next) {
+        if (m->skipping) continue;
+        m->skipping = 1;
+        for (int i = 0; i < m->ntr; i++) dsound_hs_pause(m->tr[i].hs, 1);
+        fprintf(stderr, "[bink] skip %s at frame %u of %u\n", m->name, R32(m->g + 12), m->frames);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 int bink_movie_open(void) {
     pthread_mutex_lock(&g_lock);
     int open = g_movies != NULL;

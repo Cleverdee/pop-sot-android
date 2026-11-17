@@ -41,7 +41,7 @@ endforeach()
 
 target_include_directories(pop3 PRIVATE "${RC_REPO}/runtime" "${RC_REPO}/host" "${GEN}" "${WGPU}/include")
 set_source_files_properties("${RC_REPO}/host/bink.c" PROPERTIES INCLUDE_DIRECTORIES "${FFMPEG}/include")
-target_compile_definitions(pop3 PRIVATE "RC_PROFILE=\"${RC_REPO}/android/profile_pop3.h\"")
+target_compile_definitions(pop3 PRIVATE "RC_PROFILE=\"${RC_REPO}/android/profile_pop2.h\"")
 # the x87 rounding mode is mirrored into the host FPU at runtime (as in build.sh)
 target_compile_options(pop3 PRIVATE -frounding-math -w)
 # calls inside libpop3.so bind directly instead of through the PLT (~4% of the game thread in simpleperf)

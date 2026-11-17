@@ -1,10 +1,10 @@
 ﻿<#
-Builds the native Android APK (arm64) of Prince of Persia: The Two Thrones from the recompiled POP3.EXE.
+Builds the native Android APK (arm64) of Prince of Persia: Warrior Within from the recompiled POP2.EXE.
 Reuses the toolchain the Cricket 07 port already downloaded (E:\cricket-apk\port\third_party: Android SDK + NDK r27,
 SDL2 source, wgpu-native for aarch64-linux-android, JDK).
 
 Inputs (prepared once, see ..\..\README-ANDROID.md):
-  ..\..\work\POP3.EXE        GOG pop3.exe after `upx -d` and tools\fix_gog_sections.py
+  ..\..\work\pop2.exe        GOG pop2.exe after `upx -d` (no section fix needed)
   ..\..\work\functions.json  Ghidra export (ghidra\ExportFunctions.java)
   ..\out_all\                translator output (x86toc.py + tools\patch_generated.py); made here if missing
 
@@ -19,19 +19,19 @@ param(
     [switch]$Install,
     [switch]$PushGame,
     [switch]$Retranslate,
-    [string]$GameDir = "E:\cricket-apk\pop-t2t\game\Prince of Persia The Two Thrones",
+    [string]$GameDir = "E:\cricket-apk\Prince of Persia Warrior Within",
     [string]$Opt = "-O2",
     [switch]$Debug
 )
 
 $ErrorActionPreference = "Stop"
 $Android = $PSScriptRoot
-$Repo = Split-Path $Android -Parent                     # pop-t2t\src
-$Top = Split-Path $Repo -Parent                         # pop-t2t
+$Repo = Split-Path $Android -Parent                     # pop-ww\src
+$Top = Split-Path $Repo -Parent                         # pop-ww
 $Work = Join-Path $Top "work"
 $CricketTP = "E:\cricket-apk\port\third_party"
 $Tools = Join-Path $CricketTP "tools"
-$Package = "com.cleverdee.pop3"
+$Package = "com.cleverdee.popww"
 $NdkVersion = "27.2.12479018"
 
 function Step($msg) { Write-Host ""; Write-Host "== $msg" -ForegroundColor Cyan }
@@ -62,12 +62,12 @@ $env:RC_WGPU = Join-Path $CricketTP "wgpu"
 foreach ($p in @($env:SDL2_SRC, (Join-Path $env:RC_WGPU "lib\libwgpu_native.a"))) { if (-not (Test-Path $p)) { Fail "missing $p" } }
 
 Step "Recompiled code"
-$Exe = Join-Path $Work "POP3.EXE"
+$Exe = Join-Path $Work "pop2.exe"
 $Funcs = Join-Path $Work "functions.json"
 $OutAll = Join-Path $Repo "out_all"
 foreach ($p in @($Exe, $Funcs)) { if (-not (Test-Path $p)) { Fail "missing $p (see README-ANDROID.md)" } }
 $Hash = (Get-FileHash $Exe -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
-$env:RC_EXE_HASH = ""   # the GOG exe is preprocessed: the app can't compare the player's pop3.exe against it
+$env:RC_EXE_HASH = ""   # the GOG exe is preprocessed: the app can't compare the player's pop2.exe against it
 $Stamp = Join-Path $OutAll ".exe-hash"
 if ($Retranslate -or -not (Test-Path $Stamp) -or (Get-Content $Stamp) -ne $Hash) {
     if (Test-Path $OutAll) { Remove-Item -Recurse -Force $OutAll }
@@ -91,7 +91,7 @@ $variant = if ($Debug) { "debug" } else { "release" }
 $built = Join-Path $Android "app\build\outputs\apk\$variant\app-$variant.apk"
 $OutDir = Join-Path $Android "output"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-$Apk = Join-Path $OutDir "PrinceOfPersiaT2T.apk"
+$Apk = Join-Path $OutDir "PrinceOfPersiaWW.apk"
 Copy-Item -Force $built $Apk
 Write-Host "  built $Apk ($([math]::Round((Get-Item $Apk).Length / 1MB)) MB)" -ForegroundColor Green
 
@@ -107,7 +107,7 @@ if ($Install -or $PushGame) {
         Run $Adb @("shell", "mkdir", "-p", $PhoneGame)
         Run $Adb @("push", "--sync", "$GameDir\.", $PhoneGame)
         # the recompiled code is the unpacked exe; the game folder keeps it under the name the host loads
-        Run $Adb @("push", $Exe, "$PhoneGame/POP3.EXE")
+        Run $Adb @("push", $Exe, "$PhoneGame/POP2.EXE")
     }
 }
 Write-Host ""

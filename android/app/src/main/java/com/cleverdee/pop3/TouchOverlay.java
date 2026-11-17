@@ -42,6 +42,7 @@ public class TouchOverlay extends View {
     static native void nativeTouchPad(int buttons, int lx, int ly);
     static native void nativeTouchMouse(int button, int dx, int dy);   /* button: -1 none, 0 up, 1 down */
     static native int nativeFps();
+    static native void nativeSkipMovie();   /* host/bink.c: the playing movie jumps to its end */
     static native void nativeMenuTap(float nx, float ny);   /* host/gamephase.c: steer the menu cursor there and click */
     static native int nativeGamePhase();   /* host/gamephase.c PH_*: see phaseLayout() */
     static native int nativeNetState();   /* multiplayer: 0 off, 1 fine, 2 waiting, 3 other player gone, 4 out of sync */
@@ -99,7 +100,7 @@ public class TouchOverlay extends View {
        intro), so it sends Escape, the pad's A and a left click at once */
     private static Btn skipButton() {
         Btn b = new Btn("skip", "Skip", I_SKIP, 1 << A, 0, true, 1.45f, 1.45f, 0.58f);
-        b.key = HID_SKIP; b.mouse = 1;
+        /* only the host's skip (nativeSkipMovie): an Escape or click would reach the game once the movie is over */
         return b;
     }
     /* HID usages (SDL scancodes) */
@@ -537,6 +538,7 @@ public class TouchOverlay extends View {
         }
         if ((b.flags & F_KEYBOARD) != 0) { toggleKeyboard(); return; }
         if ((b.flags & F_TOGGLE) != 0) { b.on = !b.on; return; }
+        if (b.icon == I_SKIP) nativeSkipMovie();
         if (b.key != 0) nativeKey(b.key, true);
         if (b.mouse != 0) nativeTouchMouse(b.mouse == 2 ? 3 : 1, 0, 0);
         mHeld.put(pointer, b);
@@ -800,7 +802,7 @@ public class TouchOverlay extends View {
 
         if (HAS_STICK[mLayout]) {
             mLine.setStrokeWidth(2 * mDp);
-            mLine.setColor(Color.argb((int) (170 * a), 214, 170, 92));   /* gold, like the buttons */
+            mLine.setColor(Color.argb((int) (170 * a), 184, 190, 202));   /* steel, like the buttons */
             if (mStickPointer >= 0) {
                 mFill.setColor(Color.argb((int) (60 * a), 0, 0, 0));
                 c.drawCircle(mStickCx, mStickCy, mStickRadius, mFill);
@@ -808,10 +810,10 @@ public class TouchOverlay extends View {
                 float dx = mStickX - mStickCx, dy = mStickY - mStickCy;
                 float len = (float) Math.sqrt(dx * dx + dy * dy);
                 if (len > mStickRadius) { dx *= mStickRadius / len; dy *= mStickRadius / len; }
-                mFill.setColor(Color.argb((int) (150 * a), 214, 170, 92));
+                mFill.setColor(Color.argb((int) (150 * a), 184, 190, 202));
                 c.drawCircle(mStickCx + dx, mStickCy + dy, mStickRadius * 0.45f, mFill);
             } else {   /* where the stick lives: a faint ring at its resting place */
-                mLine.setColor(Color.argb((int) (110 * a), 214, 170, 92));
+                mLine.setColor(Color.argb((int) (110 * a), 184, 190, 202));
                 c.drawCircle(1.9f * mU, getHeight() - 1.9f * mU, mStickRadius * 0.8f, mLine);
             }
         }
@@ -836,8 +838,8 @@ public class TouchOverlay extends View {
 
     /* the look: burnished gold on a dark glass disc, in a thin double ring with four small diamonds;
        pressed, the disc glows like embers and the gold turns dark */
-    private static int gold(float a) { return Color.argb((int) (a * 255), 226, 180, 96); }
-    private static int goldLight(float a) { return Color.argb((int) (a * 255), 252, 230, 170); }
+    private static int gold(float a) { return Color.argb((int) (a * 255), 184, 190, 202); }   /* Warrior Within: steel */
+    private static int goldLight(float a) { return Color.argb((int) (a * 255), 238, 242, 248); }
 
     private void diamondAt(Canvas c, float x, float y, float r) {
         mPath.reset();
@@ -846,17 +848,17 @@ public class TouchOverlay extends View {
     }
 
     private void drawButton(Canvas c, Btn b, boolean down, float a) {
-        mFill.setColor(down ? Color.argb((int) (215 * a), 236, 150, 58) : Color.argb((int) (120 * a), 14, 9, 6));
+        mFill.setColor(down ? Color.argb((int) (215 * a), 160, 24, 22) : Color.argb((int) (120 * a), 12, 13, 16));
         c.drawCircle(b.x, b.y, b.r, mFill);
         if (down) {   /* a brighter core to the glow */
-            mFill.setColor(Color.argb((int) (150 * a), 255, 214, 140));
+            mFill.setColor(Color.argb((int) (150 * a), 255, 150, 140));
             c.drawCircle(b.x, b.y, b.r * 0.62f, mFill);
         }
         mLine.setStrokeWidth(Math.max(1.5f * mDp, b.r * 0.05f));
         mLine.setColor(down ? goldLight(0.95f * a) : gold(0.85f * a));
         c.drawCircle(b.x, b.y, b.r, mLine);
         mLine.setStrokeWidth(Math.max(1f * mDp, b.r * 0.018f));
-        mLine.setColor(down ? Color.argb((int) (140 * a), 90, 40, 10) : gold(0.45f * a));
+        mLine.setColor(down ? Color.argb((int) (160 * a), 255, 190, 180) : gold(0.45f * a));
         c.drawCircle(b.x, b.y, b.r * 0.86f, mLine);
         mFill.setColor(down ? goldLight(a) : gold(0.9f * a));
         float dr = Math.max(2.5f * mDp, b.r * 0.08f);
@@ -864,7 +866,7 @@ public class TouchOverlay extends View {
         diamondAt(c, b.x, b.y + b.r, dr);
         diamondAt(c, b.x - b.r, b.y, dr);
         diamondAt(c, b.x + b.r, b.y, dr);
-        int fg = down ? Color.argb((int) (240 * a), 48, 18, 4) : goldLight(0.95f * a);
+        int fg = down ? Color.argb((int) (245 * a), 255, 246, 244) : goldLight(0.95f * a);
         boolean labelled = b.label.length() > 0 && b.icon != I_NUMBER && b.icon != I_KEYBOARD;
         float iy = labelled ? b.y - b.r * 0.14f : b.y;
         drawIcon(c, b, b.x, iy, b.r * (labelled ? 0.42f : 0.5f), fg);
@@ -1041,7 +1043,7 @@ public class TouchOverlay extends View {
         for (Btn b : mGlobal) drawButton(c, b, false, mOpacity);
         for (Btn b : mLayouts[mEditLayout]) if (shown(b)) drawButton(c, b, (b.flags & F_TOGGLE) != 0 && b.on, mOpacity);
         if (mEditSel != null) {
-            mLine.setColor(Color.argb(240, 240, 130, 40));
+            mLine.setColor(Color.argb(240, 210, 44, 38));
             mLine.setStrokeWidth(2.5f * mDp);
             mLine.setPathEffect(new DashPathEffect(new float[] { 8 * mDp, 6 * mDp }, 0));
             c.drawCircle(mEditSel.x, mEditSel.y, mEditSel.r + 5 * mDp, mLine);
@@ -1066,7 +1068,7 @@ public class TouchOverlay extends View {
         mEditDone.set(w / 2f + 0.2f * mU, by - 0.45f * mU, w / 2f + 2.4f * mU, by + 0.45f * mU);
         mLine.setColor(gold(0.85f));
         mLine.setStrokeWidth(1.5f * mDp);
-        mFill.setColor(Color.argb(190, 14, 9, 6));
+        mFill.setColor(Color.argb(190, 12, 13, 16));
         c.drawRoundRect(mEditReset, 0.2f * mU, 0.2f * mU, mFill);
         c.drawRoundRect(mEditReset, 0.2f * mU, 0.2f * mU, mLine);
         mFill.setColor(gold(0.95f));
@@ -1076,7 +1078,7 @@ public class TouchOverlay extends View {
         float tyb = by - (mText.descent() + mText.ascent()) / 2;
         mText.setColor(goldLight(0.95f));
         c.drawText("Reset layout", mEditReset.centerX(), tyb, mText);
-        mText.setColor(Color.argb(240, 48, 18, 4));
+        mText.setColor(Color.argb(240, 16, 17, 20));
         c.drawText("Done", mEditDone.centerX(), tyb, mText);
     }
 
@@ -1087,7 +1089,7 @@ public class TouchOverlay extends View {
         c.drawRect(0, 0, w, h, mFill);
         float half = Math.min(6.2f * mU, w / 2f - 0.2f * mU);
         RectF card = new RectF(w / 2f - half, h / 2f - 4.3f * mU, w / 2f + half, h / 2f + 4.3f * mU);
-        mFill.setColor(Color.argb(240, 20, 14, 10));
+        mFill.setColor(Color.argb(240, 18, 19, 23));
         c.drawRoundRect(card, 0.12f * mU, 0.12f * mU, mFill);
         mLine.setStrokeWidth(1.5f * mDp);
         mLine.setColor(gold(0.85f));
@@ -1182,7 +1184,7 @@ public class TouchOverlay extends View {
         mLine.setStrokeWidth(1.5f * mDp);
         c.drawRoundRect(r, 0.2f * mU, 0.2f * mU, mLine);
         mText.setTextSize(Math.min(0.33f * mU, r.width() / Math.max(1, label.length()) * 1.7f));
-        mText.setColor(on ? Color.argb(240, 48, 18, 4) : goldLight(0.9f));
+        mText.setColor(on ? Color.argb(240, 16, 17, 20) : goldLight(0.9f));
         c.drawText(label, r.centerX(), r.centerY() - (mText.descent() + mText.ascent()) / 2, mText);
     }
 }

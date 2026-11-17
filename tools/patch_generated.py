@@ -39,4 +39,39 @@ for w, h in ((0x320, 0x258), (0x400, 0x300)):
         if n:
             open(f, "w").write(s2)
             done += n
+
+# Warrior Within: the Hardware.INI Resolutions parser (FUN_00415d30) keeps only 4:3 modes (640x480 ... 2048x1536), so
+# the host's one widescreen mode was dropped, the mode list was empty and the first profile's settings ended in
+# "FindAvailableDisplayMode() - Unable to find a display mode" (ExitProcess 1001). The 640x480 slot takes the host size.
+for f in glob.glob(sys.argv[1] + "/*.c"):
+    s = open(f).read()
+    if "void f_00415d30(" not in s:
+        continue
+    i = s.index("void f_00415d30(")
+    j = s.index("\n}\n", i)
+    body = s[i:j]
+    b2 = body.replace("(uint32_t)0x280u); /* cmp eax, 0x280 */",
+                      "({ extern uint32_t host_video_width(void); host_video_width(); })); /* cmp eax, 0x280 (host size) */") \
+             .replace("(uint32_t)0x1e0u); /* cmp dword ptr [esp + 0x1c], 0x1e0 */",
+                      "({ extern uint32_t host_video_height(void); host_video_height(); })); /* cmp dword ptr [esp + 0x1c], 0x1e0 (host size) */")
+    if b2 != body and "cmp eax, 0x320" in body:   # only the WW parser (it also checks 800x600 next)
+        open(f, "w").write(s[:i] + b2 + s[j:])
+        done += 2
+# Two Thrones: the Hardware.INI Resolutions parser (FUN_00418bf0) keeps only 4:3 and 16:9 modes (|w/h - r| < 0.001), so
+# a phone-shaped mode (1170x540 on 19.5:9) was dropped and the game quit (FindAvailableDisplayMode, ExitProcess 1001).
+# Its 16:9 compare takes the host's shape instead.
+for f in glob.glob(sys.argv[1] + "/*.c"):
+    s = open(f).read()
+    if "void f_00418bf0(" not in s:
+        continue
+    i = s.index("void f_00418bf0(")
+    j = s.index("\n}\n", i)
+    body = s[i:j]
+    old = "RF64((uint32_t)(0x97d148u))); /* fsub qword ptr [0x97d148] */"
+    new = ("({ extern uint32_t host_video_width(void), host_video_height(void); "
+           "(double)host_video_width() / (double)host_video_height(); })); /* fsub qword ptr [0x97d148] (host shape) */")
+    if body.count(old) == 1:
+        open(f, "w").write(s[:i] + body.replace(old, new) + s[j:])
+        done += 1
+
 print(f"patch_generated: {done} patch(es)")
