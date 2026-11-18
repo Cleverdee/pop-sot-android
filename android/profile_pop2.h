@@ -41,6 +41,8 @@
 #define GAME_CURSOR_TEX   0x6c143e60u   /* the quill cursor (64x64; RC_LOG_UITEX) */
 #define GAME_CURSOR_HOT_X 6.f
 #define GAME_CURSOR_HOT_Y 4.f
-#define GAME_CAM_X_SIGN   (-1)          /* the camera turns the opposite way to Two Thrones for mouse x */
+/* Warrior Within adds raw mouse counts to the camera (x -= dx, y += dy; FUN_00422d..., near 0x422ee2): the
+   (Mouse speed + 1) * 1.1 scale only moves the cursor. Two Thrones scales both. Same x sign as Two Thrones. */
+#define GAME_CAM_RAW_COUNTS 1
 
 #endif

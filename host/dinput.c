@@ -157,6 +157,9 @@ void dinput_mouse_move(int dx, int dy) {
     g_mpend_x += dx; g_mpend_y += dy;
     pthread_mutex_unlock(&g_mlock);
 }
+#ifndef GAME_CAM_RAW_COUNTS
+#define GAME_CAM_RAW_COUNTS 0   /* 1: the camera takes mouse counts unscaled (Warrior Within) */
+#endif
 /* the game's factor from mouse counts to camera units (0: not Two Thrones, or not set up yet) */
 static float game_mouse_scale(void) {
     float k = (RF32(GAME_MOUSE_OPT) + RF32(GAME_MOUSE_ADD)) * RF32(GAME_MOUSE_MUL);
@@ -417,8 +420,8 @@ static void camera_units(double rx, double ry, float k, int *dx, int *dy) {
     if (g_yf_log) fprintf(stderr, "[yf] %.3f rx %.1f yaw %.2f tgt %.2f act %d follow %d ux %d\n", host_seconds(), rx, g_yf_prev, g_yf_target, g_yf_act, follow, ux);
     g_qy += ry * g_cam[5];
     int uy = band_units(&g_qy, g_cam[2], g_cam[3], (sp + 1.f) / 20.f);
-    *dx = count_for(ux, k); *dy = count_for(uy, k);
-    *dx *= GAME_CAM_X_SIGN;   /* Warrior Within turns the other way for the same mouse motion */
+    float kc = GAME_CAM_RAW_COUNTS ? 1.f : k;   /* counts per camera unit */
+    *dx = count_for(ux, kc); *dy = count_for(uy, kc);
     g_gx = g_gy = 0;
 }
 
