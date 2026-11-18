@@ -44,5 +44,17 @@
 /* Warrior Within adds raw mouse counts to the camera (x -= dx, y += dy; FUN_00422d..., near 0x422ee2): the
    (Mouse speed + 1) * 1.1 scale only moves the cursor. Two Thrones scales both. Same x sign as Two Thrones. */
 #define GAME_CAM_RAW_COUNTS 1
+/* No finger-follow camera here (the heading isn't read in WW), so a fast swipe queued seconds of turning in the rate
+   band and the camera kept drifting after the finger stopped: keep at most this many frames of it. */
+#define GAME_CAM_MAX_CARRY 3
+/* Turn rate (deg per read) against the camera value v = x * (speed * 4.5 + 0.5) / 50, measured on the phone with the
+   mtest hook (2026-11-18): unlike Two Thrones (flat from v ~0.7 at 2.6) it keeps rising up to the game's clamp (v 5). */
+#define GAME_CAM_RATE_V { 0.53f, 0.6f, 0.8f, 1.36f, 2.27f, 3.18f, 4.55f, 5.0f }
+#define GAME_CAM_RATE_R { 0.f, 0.2f, 0.65f, 2.7f, 4.0f, 5.4f, 8.0f, 8.6f }
+#define GAME_CAM_RATE_N 8
+/* The rate band (used when the heading can't be followed, e.g. the camera is blocked, and always for vertical): yaw
+   is ~4 deg per read at v 2.27. Vertical: pitch moves from v ~0.5 and keeps speeding up to the game's clamp (v 2: ~3 deg per read); Two Thrones' band
+   stopped at 0.7 (well under 1 deg per read). "dead_x,full_x,dead_y,full_y,gain_x,gain_y" as RC_CAM. */
+#define GAME_CAM_BAND { 0.47f, 2.27f, 0.47f, 2.0f, 0.11f, 0.11f }
 
 #endif

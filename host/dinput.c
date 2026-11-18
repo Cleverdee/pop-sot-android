@@ -157,6 +157,9 @@ void dinput_mouse_move(int dx, int dy) {
     g_mpend_x += dx; g_mpend_y += dy;
     pthread_mutex_unlock(&g_mlock);
 }
+#ifndef GAME_CAM_MAX_CARRY   /* frames at the maximum turn rate a fast swipe may queue past the finger (rate band mode) */
+#define GAME_CAM_MAX_CARRY 1e9
+#endif
 #ifndef GAME_CAM_RAW_COUNTS
 #define GAME_CAM_RAW_COUNTS 0   /* 1: the camera takes mouse counts unscaled (Warrior Within) */
 #endif
@@ -207,7 +210,10 @@ static int mtest_step(int *dx, int *dy) {
    nothing or spun the camera. Here finger motion becomes the turn wanted this frame, as a fraction of the maximum
    rate, sent as the v inside that band that gives it; more than the maximum carries over to the next frames, so a
    fast flick still turns as far as the finger went. RC_CAM="dead_x,full_x,dead_y,full_y,gain_x,gain_y" tunes it. */
-static float g_cam[6] = { 0.47f, 0.70f, 0.47f, 0.70f, 0.11f, 0.11f };
+#ifndef GAME_CAM_BAND
+#define GAME_CAM_BAND { 0.47f, 0.70f, 0.47f, 0.70f, 0.11f, 0.11f }
+#endif
+static float g_cam[6] = GAME_CAM_BAND;
 static double g_qx, g_qy;   /* turn owed, in fractions of a frame at the maximum rate */
 static int band_units(double *q, float dead, float full, float per_unit) {
     double s = *q > 1 ? 1 : *q < -1 ? -1 : *q;
@@ -234,9 +240,14 @@ static double wrap180(double a) { a = fmod(a + 180.0, 360.0); if (a < 0) a += 36
    camf.txt "gain lag deg" or "off" (deleted once read); camlog.txt present = log every read as [yf];
    ftest.txt "counts reads" = a fake swipe: that many mouse counts added on each of the next reads */
 /* rate curve: deg per read against camera value v (camlv.txt "v r v r ..." replaces it; r rising) */
+#ifdef GAME_CAM_RATE_V   /* the game's own curve (profile) */
+static float g_lv_v[16] = GAME_CAM_RATE_V, g_lv_r[16] = GAME_CAM_RATE_R;
+static int g_lv_n = GAME_CAM_RATE_N;
+#else
 static float g_lv_v[16] = { 0.53f, 0.54f, 0.56f, 0.58f, 0.60f, 0.62f, 0.68f, 0.72f, 0.80f },   /* measured, speed option 0 */
             g_lv_r[16] = { 0.f, 0.3f, 0.43f, 0.67f, 0.85f, 1.06f, 1.65f, 2.21f, 2.6f };
 static int g_lv_n = 9;
+#endif
 static float g_force_sp = 0.f;   /* the Mouse speed option forced to this (fine input steps); speedopt.txt "x" changes it, -1 = leave */
 static int g_yf_log, g_ft_reads, g_yf_direct = 0;   /* direct heading writes: off (the matrix found was the Prince's facing) */
 static float g_ft_counts;
@@ -415,10 +426,14 @@ static void camera_units(double rx, double ry, float k, int *dx, int *dy) {
     if (follow) g_qx = 0;   /* the camera's angle follows the finger (above) */
     else {
         g_qx += rx * g_cam[4];
+        if (g_qx > 1 + GAME_CAM_MAX_CARRY) g_qx = 1 + GAME_CAM_MAX_CARRY;   /* turn still owed once the finger stops */
+        if (g_qx < -1 - GAME_CAM_MAX_CARRY) g_qx = -1 - GAME_CAM_MAX_CARRY;
         ux = band_units(&g_qx, g_cam[0], g_cam[1], (sp * 4.5f + 0.5f) / 50.f);
     }
     if (g_yf_log) fprintf(stderr, "[yf] %.3f rx %.1f yaw %.2f tgt %.2f act %d follow %d ux %d\n", host_seconds(), rx, g_yf_prev, g_yf_target, g_yf_act, follow, ux);
     g_qy += ry * g_cam[5];
+    if (g_qy > 1 + GAME_CAM_MAX_CARRY) g_qy = 1 + GAME_CAM_MAX_CARRY;
+    if (g_qy < -1 - GAME_CAM_MAX_CARRY) g_qy = -1 - GAME_CAM_MAX_CARRY;
     int uy = band_units(&g_qy, g_cam[2], g_cam[3], (sp + 1.f) / 20.f);
     float kc = GAME_CAM_RAW_COUNTS ? 1.f : k;   /* counts per camera unit */
     *dx = count_for(ux, kc); *dy = count_for(uy, kc);
@@ -432,7 +447,8 @@ static void mouse_release(void) {
             extern int camera_constants(float out[12][4]);
             float c[12][4];
             camera_constants(c);
-            fprintf(stderr, "[yfm] %.3f yaw %.2f mtest %d\n", host_seconds(), atan2(c[10][1], c[10][0]) * (180.0 / M_PI), on ? tdx : 0);
+            fprintf(stderr, "[yfm] %.3f yaw %.2f pitch %.2f mtest %d %d\n", host_seconds(), atan2(c[10][1], c[10][0]) * (180.0 / M_PI),
+                    atan2(c[10][2], hypot(c[10][0], c[10][1])) * (180.0 / M_PI), on ? tdx : 0, on ? tdy : 0);
         }
         if (on) { mouse_deliver(tdx, tdy); return; }
     }
