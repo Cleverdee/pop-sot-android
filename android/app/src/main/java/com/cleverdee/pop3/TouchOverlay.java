@@ -67,7 +67,7 @@ public class TouchOverlay extends View {
             I_PAUSE = 17, I_GEAR = 18, I_NUMBER = 19, I_CROSS = 20, I_CIRCLE = 21, I_SQUARE = 22, I_TRIANGLE = 23,
             I_LEFT = 24, I_RIGHT = 25;
     static final int I_JUMP = 26, I_SWORD = 27, I_WALLRUN = 28, I_DAGGER = 29, I_SANDS = 30, I_CAMERA = 31, I_EYE = 32,
-            I_KEYBOARD = 33;   /* Two Thrones */
+            I_KEYBOARD = 33, I_MAP = 34;   /* Two Thrones */
     static final int F_TOGGLE = 1, F_SHOT = 2, F_DELIVERY = 4, F_SETTINGS = 8, F_ESCAPE = 16, F_FIELD_OPEN = 32,
                      F_FIELD_CLOSE = 64, F_MOVE_LEFT = 128, F_MOVE_RIGHT = 256,
                      F_KEYBOARD = 512;   /* opens or closes Android's on-screen keyboard (typing a profile name) */
@@ -105,7 +105,7 @@ public class TouchOverlay extends View {
     }
     /* HID usages (SDL scancodes) */
     private static final int HID_SKIP = 41;   /* Escape: one of the inputs Skip sends (see skipButton) */
-    private static final int HID_C = 6, HID_E = 8, HID_F = 9, HID_R = 21, HID_X = 27, HID_ENTER = 40, HID_SPACE = 44;
+    private static final int HID_C = 6, HID_E = 8, HID_F = 9, HID_R = 21, HID_X = 27, HID_ENTER = 40, HID_SPACE = 44, HID_TAB = 43;
 
     private final Btn[][] mLayouts = {
         { /* Prince of Persia: The Two Thrones, in play (menus: layout 2, movies: layout 6). The stick is
@@ -119,7 +119,8 @@ public class TouchOverlay extends View {
           K("rewind", "Rewind", I_SANDS, HID_R, 0, true, 1.25f, 5.45f, 0.5f),
           K("cam", "Camera", I_CAMERA, HID_X, 0, true, 2.6f, 5.6f, 0.4f),
           K("look", "Look", I_EYE, HID_F, 0, true, 3.85f, 5.6f, 0.4f),
-          K("enter", "Enter", I_CHECK, HID_ENTER, 0, true, 1.0f, 8.15f, 0.42f) },
+          K("enter", "Enter", I_CHECK, HID_ENTER, 0, true, 1.0f, 8.15f, 0.42f),
+          K("map", "Map", I_MAP, HID_TAB, 0, true, 2.2f, 8.15f, 0.42f) },   /* Warrior Within: Tab opens the map */
         { /* batting */ R("shot", "Shot", I_BAT, Y, F_SHOT, 1.6f, 1.6f, 0.8f),
           R("charge", "Charge", I_RUN, B, F_SHOT, 1.55f, 3.55f, 0.55f),
           R("leave", "Leave", I_HAND, X, 0, 3.3f, 1.45f, 0.55f),
@@ -1058,6 +1059,13 @@ public class TouchOverlay extends View {
             p.moveTo(cx - s * .88f, cy); p.quadTo(cx, cy - s * .78f, cx + s * .88f, cy); p.quadTo(cx, cy + s * .78f, cx - s * .88f, cy);
             c.drawCircle(cx, cy, s * .27f, mIcon);
             c.drawCircle(cx, cy, s * .04f, mIcon);
+            break;
+        case I_MAP:   /* a folded map: three panels and a route */
+            p.moveTo(cx - s * .85f, cy - s * .55f); p.lineTo(cx - s * .3f, cy - s * .75f); p.lineTo(cx + s * .3f, cy - s * .55f);
+            p.lineTo(cx + s * .85f, cy - s * .75f); p.lineTo(cx + s * .85f, cy + s * .55f); p.lineTo(cx + s * .3f, cy + s * .75f);
+            p.lineTo(cx - s * .3f, cy + s * .55f); p.lineTo(cx - s * .85f, cy + s * .75f); p.close();
+            p.moveTo(cx - s * .3f, cy - s * .75f); p.lineTo(cx - s * .3f, cy + s * .55f);
+            p.moveTo(cx + s * .3f, cy - s * .55f); p.lineTo(cx + s * .3f, cy + s * .75f);
             break;
         case I_KEYBOARD:   /* a keyboard: case, three rows of keys, space bar */
             c.drawRoundRect(new RectF(cx - s * .9f, cy - s * .55f, cx + s * .9f, cy + s * .55f), s * .14f, s * .14f, mIcon);

@@ -43,6 +43,7 @@ typedef struct Movie {
     uint32_t g;              /* guest HBINK */
     char name[256];
     AVFormatContext *fmt;
+    FILE *io_f; AVIOContext *io; long io_off, io_size;   /* custom I/O past a UBV header */
     int vs;                  /* video stream index */
     AVCodecContext *vdec;
     AVFrame *cur, *tmp;
@@ -68,6 +69,7 @@ typedef struct Movie {
     uint32_t logged_fmt;
     struct Movie *next;
 } Movie;
+static void io_close(Movie *m);
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static Movie *g_movies;
@@ -198,7 +200,30 @@ static void free_movie(Movie *m) {
     avcodec_free_context(&m->vdec);
     av_frame_free(&m->cur); av_frame_free(&m->tmp); av_packet_free(&m->pkt);
     if (m->fmt) avformat_close_input(&m->fmt);
+    io_close(m);
     free(m);
+}
+
+/* Warrior Within: the Bink stream starts after Ubisoft's UBV header. The bink demuxer seeks to the frame offsets of its
+   index, which count from the BIK signature, so it must see a file that starts there (skip_initial_bytes isn't enough:
+   the seeks land 30 bytes early and every frame decodes to nothing, a green picture). */
+static int io_read(void *o, uint8_t *buf, int n) {
+    Movie *m = o;
+    size_t r = fread(buf, 1, (size_t)n, m->io_f);
+    return r ? (int)r : AVERROR_EOF;
+}
+static int64_t io_seek(void *o, int64_t off, int whence) {
+    Movie *m = o;
+    if (whence & AVSEEK_SIZE) return m->io_size;
+    whence &= ~AVSEEK_FORCE;
+    if (whence == SEEK_SET) off += m->io_off;
+    else if (whence == SEEK_END) { off += m->io_off + m->io_size; whence = SEEK_SET; }
+    if (fseek(m->io_f, (long)off, whence) < 0) return -1;
+    return ftell(m->io_f) - m->io_off;
+}
+static void io_close(Movie *m) {
+    if (m->io) { av_freep(&m->io->buffer); avio_context_free(&m->io); }
+    if (m->io_f) { fclose(m->io_f); m->io_f = NULL; }
 }
 
 static AVCodecContext *open_dec(AVStream *st) {
@@ -216,18 +241,29 @@ static Movie *open_movie(const char *host, const char *name, uint32_t flags) {
     Movie *m = calloc(1, sizeof *m);
     snprintf(m->name, sizeof m->name, "%s", name);
     m->vs = -1;
-    /* Warrior Within's movies start with Ubisoft's 32-byte "UBV" header in front of the BIKi stream */
-    AVDictionary *opt = NULL;
+    /* Warrior Within's movies start with Ubisoft's "UBV" header in front of the BIKi stream (30 bytes in the GOG
+       files): the demuxer then reads through io_read/io_seek, which start where "BIK" does */
     FILE *hf = fopen(host, "rb");
     if (hf) {
-        char sig[3] = { 0 };
-        if (fread(sig, 1, 3, hf) == 3 && !memcmp(sig, "UBV", 3)) av_dict_set(&opt, "skip_initial_bytes", "32", 0);
-        fclose(hf);
+        unsigned char sig[64] = { 0 };
+        size_t n = fread(sig, 1, sizeof sig, hf);
+        long k = 0;
+        if (n >= 3 && !memcmp(sig, "UBV", 3))
+            for (size_t q = 3; q + 3 <= n; q++) if (!memcmp(sig + q, "BIK", 3)) { k = (long)q; break; }
+        if (k) {
+            fseek(hf, 0, SEEK_END);
+            m->io_f = hf; m->io_off = k; m->io_size = ftell(hf) - k;
+            fseek(hf, k, SEEK_SET);
+            uint8_t *buf = av_malloc(32768);
+            m->io = buf ? avio_alloc_context(buf, 32768, 0, m, io_read, NULL, io_seek) : NULL;
+            m->fmt = m->io ? avformat_alloc_context() : NULL;
+            if (m->fmt) m->fmt->pb = m->io;
+        } else fclose(hf);
     }
-    int err = avformat_open_input(&m->fmt, host, av_find_input_format("bink"), &opt);
-    av_dict_free(&opt);
+    int err = avformat_open_input(&m->fmt, host, av_find_input_format("bink"), NULL);
     if (err < 0) {
         fprintf(stderr, "[bink] can't open %s (%s)\n", name, host);
+        io_close(m);
         free(m);
         return NULL;
     }
@@ -235,7 +271,7 @@ static Movie *open_movie(const char *host, const char *name, uint32_t flags) {
         if (m->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) { m->vs = (int)i; break; }
     if (m->vs < 0 || !(m->vdec = open_dec(m->fmt->streams[m->vs]))) {
         fprintf(stderr, "[bink] %s: no usable video stream\n", name);
-        avformat_close_input(&m->fmt); free(m);
+        avformat_close_input(&m->fmt); io_close(m); free(m);
         return NULL;
     }
     AVStream *vst = m->fmt->streams[m->vs];
