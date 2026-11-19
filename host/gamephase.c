@@ -169,7 +169,8 @@ static int ui_menu(void) {
     return 0;
 }
 
-int gamephase_current(void) { return bink_movie_open() ? 2 : ui_menu() ? 1 : 0; }
+/* a menu page wins over a movie: Warrior Within draws some menus (map, game over) with movies behind them */
+int gamephase_current(void) { return ui_menu() ? 1 : bink_movie_open() ? 2 : 0; }
 
 /* nx, ny: the tap within the window, 0..1 */
 void gamephase_menu_tap(float nx, float ny) {

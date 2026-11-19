@@ -360,7 +360,7 @@ public class TouchOverlay extends View {
     private boolean isGlobal(Btn b) { for (Btn g : mGlobal) if (g == b) return true; return false; }
 
     private Btn buttonAt(int l, float x, float y) {
-        if (l != L_SCENE) for (Btn b : mGlobal) if (b.hit(x, y)) return b;
+        for (Btn b : mGlobal) if (b.hit(x, y)) return b;   /* pause and settings in movies too */
         for (Btn b : mLayouts[l]) if (shown(b) && b.hit(x, y)) return b;
         return null;
     }
@@ -830,7 +830,7 @@ public class TouchOverlay extends View {
         if (fade < 1f) postInvalidateOnAnimation();
         float a = fade * mOpacity;
         int held = heldBits();
-        if (mLayout != L_SCENE) for (Btn b : mGlobal) drawButton(c, b, (held & b.bits) != 0, a);
+        for (Btn b : mGlobal) drawButton(c, b, (held & b.bits) != 0, a);
         for (Btn b : mLayouts[mLayout])
             if (shown(b)) drawButton(c, b, (b.flags & F_TOGGLE) != 0 ? b.on : isHeld(b), a);
 
