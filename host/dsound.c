@@ -332,7 +332,13 @@ static int open_aaudio(void) {
     }
     /* a few bursts of cushion: the game thread is busy and the mixer shares the guest lock */
     int32_t burst = AAudioStream_getFramesPerBurst(s);
-    if (burst > 0) AAudioStream_setBufferSizeInFrames(s, burst * 4);
+    /* at least ~40 ms: Snapdragon phones report small bursts (2-4 ms), and 4 of them crackled while the game thread
+       held the mixer up */
+    if (burst > 0) {
+        int32_t want = burst * 4, min = MIX_RATE / 25;
+        if (want < min) want = (min + burst - 1) / burst * burst;
+        AAudioStream_setBufferSizeInFrames(s, want);
+    }
     g_aa_lost = 0;
     if ((r = AAudioStream_requestStart(s)) != AAUDIO_OK) {
         fprintf(stderr, "[dsound] AAudio start: %s\n", AAudio_convertResultToText(r));

@@ -136,6 +136,13 @@ static void pin_to_fast_cores(void) {
     }
     unsigned long long set = 0;
     for (int i = 0; i < 64; i++) if (best && f[i] == best) { set |= 1ull << i; n++; }
+    if (n == 1) {   /* one prime core (Snapdragon 8xx: X1 + 3 big): the game's other threads (renderer, sound loader)
+                       inherit this set, and on one core they all queued behind the game thread. Add the next tier. */
+        unsigned next = 0;
+        for (int i = 0; i < 64; i++) if (f[i] < best && f[i] > next) next = f[i];
+        if (next >= best * 3 / 4)
+            for (int i = 0; i < 64; i++) if (f[i] == next) { set |= 1ull << i; n++; }
+    }
     if (!n) return;
     int r = (int)syscall(__NR_sched_setaffinity, 0, sizeof set, &set);
     fprintf(stderr, "[main] game thread on the %d fastest cores (%u kHz): %s\n", n, best, r ? "failed" : "ok");
