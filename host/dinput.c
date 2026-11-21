@@ -465,8 +465,10 @@ static void mouse_release(void) {
     int dx, dy;
     float k = game_mouse_scale();
     extern int gamephase_current(void);
-    if (k > 0 && gamephase_current() == 0) camera_units(rx, ry, k, &dx, &dy);
-    else if (k > 0) {
+    if (k > 0 && gamephase_current() == 0) {
+        camera_units(rx, ry, k, &dx, &dy);
+        dx *= GAME_CAM_X_SIGN;   /* -1: the game turns the camera the other way for the same mouse move (Sands of Time) */
+    } else if (k > 0) {
         g_qx = g_qy = 0;
         g_gx += rx * k; g_gy += ry * k;
         int ux = (int)g_gx, uy = (int)g_gy;   /* whole units, toward zero; the rest waits */

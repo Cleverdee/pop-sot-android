@@ -53,6 +53,8 @@
 /* SoT movies (Video\*.int, plain BIKi, no UBV header): logos/intro/loading 640x448, cut-scenes and visions 640x346.
    None plays inside play like WW's map/power-up movies, so 640x448 counts as a cut-scene (Skip layout). */
 #define GAME_INPLAY_MOVIE_448 0
+/* a finger drag to the right turned the camera left (reported by the user, 2026-11-22): flip the horizontal camera */
+#define GAME_CAM_X_SIGN -1
 /* the dagger cursor: 128x128, drawn with a second 128x128 (35be3968) at the same spot (RC_LOG_UITEX on the profile
    menu, 2026-11-22); tip near its top-left. Unconfirmed: check menu taps land. */
 #define GAME_CURSOR_TEX   0xe416983eu
