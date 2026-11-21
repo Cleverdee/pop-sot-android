@@ -17,6 +17,10 @@
    confirmed at run time. */
 #define PROFILE_EXISTING_MUTEXES "POP_Launcher",
 
+/* The player's Hardware.INI comes from their PC's hardware test (their card's modes and formats): ours always wins.
+   (Tried as the cause of legless enemies: the game reads only [VIDEO] and the format sections through the INI
+   functions, not [CAPS], so that was not it.) */
+#define PROFILE_BUILTIN_INIS_WIN 1
 /* Hardware.INI is written by the launcher's hardware test. SoT's layout (unlike WW's) has one section per adapter
    format and a [CAPS] section; values below follow the PC file, with the host's display modes. */
 #define PROFILE_BUILTIN_INIS \
@@ -35,7 +39,7 @@
       "BufferDepths=D3DFMT_D24S8, D3DFMT_D24X8, D3DFMT_D16\n" \
       "[CAPS]\n" \
       "NonPow2Textures=0\nStreamsCount=16\nPureDevice=1\nWFog=1\nZFog=1\nPixelFog=1\nFogRange=1\nVertexFog=1\n" \
-      "ZBias=0\nSquareOnlyTextures=0\nCanStretchRect=1\nAlphaPalette=1\nMaxVertexShaderConst=256\n" \
+      "ZBias=0\nSquareOnlyTextures=0\nCanStretchRect=1\nAlphaPalette=1\nMaxVertexShaderConst=96\n" \
       "FullscreenGamma=1\nAllowDisableVSync=1\nShadowScaling=1\nColorDiffusion=1\nForceVSFog=1\nInvertFogRange=0\n" \
       "ZEnableFix=0\n" },
 

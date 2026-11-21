@@ -1280,11 +1280,19 @@ W(WaitForMultipleObjects) {
 static int ini_lookup(const char *file, const char *sect, const char *key, char *out, size_t n) {
     char host[1024], line[1024];
     map_path(file, host, sizeof host);
-    FILE *f = fopen(host, "r");
-    if (!f) {   /* a file the game's launcher normally makes: PROFILE_BUILTIN_INIS = { "name", "contents" }, ... */
-        static const char *const builtin[][2] = { PROFILE_BUILTIN_INIS { NULL, NULL } };
-        const char *base = strrchr(file, '\\');
-        base = base ? base + 1 : file;
+    /* a file the game's launcher normally makes: PROFILE_BUILTIN_INIS = { "name", "contents" }, ... It is used when
+       the file is missing; with PROFILE_BUILTIN_INIS_WIN it always wins (a hardware report from the player's PC, e.g.
+       Sands of Time's Hardware.INI with MaxVertexShaderConst=256, would describe the PC's card, not ours). */
+    static const char *const builtin[][2] = { PROFILE_BUILTIN_INIS { NULL, NULL } };
+    const char *base = strrchr(file, '\\');
+    base = base ? base + 1 : file;
+    FILE *f = NULL;
+#ifdef PROFILE_BUILTIN_INIS_WIN
+    for (int i = 0; builtin[i][0]; i++)
+        if (!strcasecmp(base, builtin[i][0])) { f = fmemopen((void *)builtin[i][1], strlen(builtin[i][1]), "r"); break; }
+#endif
+    if (!f) f = fopen(host, "r");
+    if (!f) {
         for (int i = 0; builtin[i][0]; i++)
             if (!strcasecmp(base, builtin[i][0])) { f = fmemopen((void *)builtin[i][1], strlen(builtin[i][1]), "r"); break; }
         if (!f) return 0;
