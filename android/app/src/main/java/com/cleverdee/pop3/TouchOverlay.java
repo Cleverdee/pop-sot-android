@@ -105,6 +105,10 @@ public class TouchOverlay extends View {
     }
     /* HID usages (SDL scancodes) */
     private static final int HID_SKIP = 41;   /* Escape: one of the inputs Skip sends (see skipButton) */
+    /* Layouts whose stick sends keys instead of the pad's left stick: up, left, down, right (HID usages).
+       Sands of Time moves the Prince with W/A/S/D and ignores a gamepad until one is chosen in its options. */
+    private static final int[][] STICK_KEYS = { { 26, 4, 22, 7 }, null, null, null, null, null, null, null, null };
+    private final int[] mStickKeys = new int[4];
     private static final int HID_C = 6, HID_E = 8, HID_F = 9, HID_R = 21, HID_X = 27, HID_ENTER = 40, HID_SPACE = 44, HID_TAB = 43;
 
     private final Btn[][] mLayouts = {
@@ -644,6 +648,29 @@ public class TouchOverlay extends View {
             for (Btn b : mLayouts[L_BAT]) {
                 if ((b.flags & F_MOVE_LEFT) != 0 && isHeld(b)) lx -= 32767;
                 if ((b.flags & F_MOVE_RIGHT) != 0 && isHeld(b)) lx += 32767;
+            }
+        }
+        int[] sk = STICK_KEYS[mLayout];
+        int dirs = 0;   /* bits: up, left, down, right */
+        if (sk != null) {
+            if (mStickPointer >= 0 && !off) {
+                float dx = mStickX - mStickCx, dy = mStickY - mStickCy;
+                float len = (float) Math.sqrt(dx * dx + dy * dy);
+                if (len >= 0.3f * mStickRadius) {   /* eight ways: a key is down within 67.5 degrees of its direction */
+                    if (dy < -0.383f * len) dirs |= 1;
+                    if (dx < -0.383f * len) dirs |= 2;
+                    if (dy > 0.383f * len) dirs |= 4;
+                    if (dx > 0.383f * len) dirs |= 8;
+                }
+            }
+            lx = ly = 0;   /* the game reads these keys, not the pad */
+        }
+        for (int i = 0; i < 4; i++) {
+            int want = sk != null && (dirs >> i & 1) != 0 ? sk[i] : 0;
+            if (mStickKeys[i] != want) {
+                if (mStickKeys[i] != 0) nativeKey(mStickKeys[i], false);
+                if (want != 0) nativeKey(want, true);
+                mStickKeys[i] = want;
             }
         }
         if (buttons == mSentButtons && lx == mSentX && ly == mSentY) return;
