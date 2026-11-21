@@ -32,7 +32,7 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
 - Ghidra: 9574 functions (~10 min). Translate: 17791 functions, 61 files, max 4.8 MB, 3 min. out_all stamped.
 
 ## Now
-- First APK build running (work\build.log) -> android\output\PrinceOfPersiaSoT.apk.
+- First APK built (8 min, 36 MB): android\output\PrinceOfPersiaSoT.apk. Not run on a phone yet.
 
 ## Next
 1. Ask the user before installing/pushing to the phone (other ports share it). Push: POP.EXE, *.BF/prince.bf,
