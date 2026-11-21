@@ -1,7 +1,7 @@
 # Prince of Persia: The Sands of Time - Android port hand-over
 
 Tree: `E:\cricket-apk\pop-sot\src`, branch `sot-port` -> remote `cleverdee` main (github.com/Cleverdee/pop-sot-android,
-public). Released v0.1.0 on 2026-11-22 (APK work\PrinceOfPersiaSoT-v0.1.0.apk; notes workelease_notes_v0.1.0.md), cloned from the WW tree at v0.1.8
+public). Released v0.1.0 on 2026-11-22 (APK work\PrinceOfPersiaSoT-v0.1.0.apk; notes work\release_notes_v0.1.0.md), cloned from the WW tree at v0.1.8
 (`ce73c2e`). Package `com.cleverdee.popsot` (Java package/JNI stay `com.cleverdee.pop3`, lib `libpop3.so`).
 Work files outside the repo: `E:\cricket-apk\pop-sot\work` (pop.exe = GOG POP.EXE as installed, functions.json,
 ghidra.log, translate.log, build.log). Game folder: `E:\cricket-apk\Prince of Persia The Sands of Time`.
