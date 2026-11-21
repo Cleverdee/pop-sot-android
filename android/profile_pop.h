@@ -41,7 +41,10 @@
 
 /* Game addresses the host reads, mapped from the WW ones with pop-ww/tools/port_addr.py (2026-11-21; votes in
    brackets). Mouse add/mul hold 1.0f / 1.1f as in WW. Not confirmed at run time yet. 0 = not found (feature off). */
-#define GAME_UI_PAGES     0x0080bbd8u   /* [15 of 18] */
+#define GAME_UI_PAGES     0x0080bbd8u   /* [15 of 18]; confirmed by FUN_00409870 (opens a page: pushes onto [0x80bbd8]+0xc) */
+/* SoT's page stack is the object at +0xc: +0x10 begin, +0x14 end (8-byte {page, flag} entries), +0x1c count
+   (FUN_00712440 top, FUN_00712a70 push). T2T/WW keep begin/end at +0x14/+0x18. */
+#define GAME_UI_VEC       0x10
 #define GAME_MOUSE_OPT    0x0080d08cu   /* [15; 0x80d088 had 6] */
 #define GAME_MOUSE_ADD    0x007a7f24u
 #define GAME_MOUSE_MUL    0x007a9b28u
@@ -50,8 +53,10 @@
 /* SoT movies (Video\*.int, plain BIKi, no UBV header): logos/intro/loading 640x448, cut-scenes and visions 640x346.
    None plays inside play like WW's map/power-up movies, so 640x448 counts as a cut-scene (Skip layout). */
 #define GAME_INPLAY_MOVIE_448 0
-#define GAME_CURSOR_TEX   0u
-#define GAME_CURSOR_HOT_X 2.f
-#define GAME_CURSOR_HOT_Y 3.f
+/* the dagger cursor: 128x128, drawn with a second 128x128 (35be3968) at the same spot (RC_LOG_UITEX on the profile
+   menu, 2026-11-22); tip near its top-left. Unconfirmed: check menu taps land. */
+#define GAME_CURSOR_TEX   0xe416983eu
+#define GAME_CURSOR_HOT_X 4.f
+#define GAME_CURSOR_HOT_Y 4.f
 
 #endif

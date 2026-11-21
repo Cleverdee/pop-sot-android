@@ -31,8 +31,16 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
   Cursor texture fingerprint still 0 (find with RC_LOG_UITEX). GAME_INPLAY_MOVIE_448 0 (host/bink.c switch).
 - Ghidra: 9574 functions (~10 min). Translate: 17791 functions, 61 files, max 4.8 MB, 3 min. out_all stamped.
 
-## Now
-- First APK built (8 min, 36 MB): android\output\PrinceOfPersiaSoT.apk. Not run on a phone yet.
+## Now (2026-11-22)
+- Boots through logos into the opening level and the profile menu (~43-51 FPS at 540p). Fixed on the way:
+  guest setjmp/longjmp (D3DX's libjpeg probe), no-return calls, bare-ret callback (commit 4d15359).
+- Controls in progress: page stack layout found (GAME_UI_VEC 0x10), cursor texture guessed (e416983e, 128x128),
+  SoT message-box page names added. Built, NOT yet checked on the phone (phone disconnected at 00:10).
+- Check next run: RC_LOG_PAGES=2 shows pages + "menu"/"play"; menu taps land on items; play layout (stick, jump)
+  only in play; [dinput] game mouse scale line (confirms GAME_MOUSE_OPT); camera drag direction/speed.
+- "Use safe mode settings?" MessageBox shows at every start (PrinceSM file marks a crash): check our answer.
+- Launcher still says "Warrior Within" under the title (Ui.java / MenuActivity heading).
+- Scripts: pop-sot/tools rebuild.sh [translate], phone_run.sh (crash.txt -> Continue), push_game.sh.
 
 ## Next
 1. Ask the user before installing/pushing to the phone (other ports share it). Push: POP.EXE, *.BF/prince.bf,

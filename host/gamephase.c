@@ -18,6 +18,9 @@ void input_mouse_button(int b, int down);
 uint32_t host_video_width(void), host_video_height(void);
 
 #define CURSOR_TEX GAME_CURSOR_TEX
+#ifndef GAME_UI_VEC   /* offset of the open-page vector (begin, end; 8-byte entries) in the page manager */
+#define GAME_UI_VEC 0x14   /* Two Thrones, Warrior Within; Sands of Time 0x10 */
+#endif
 #define CURSOR_HOT_X GAME_CURSOR_HOT_X   /* the pointer's tip, from the sprite's top-left corner */
 #define CURSOR_HOT_Y GAME_CURSOR_HOT_Y
 
@@ -82,10 +85,15 @@ void gamephase_frame(const uint32_t *hashes, const float *xy, uint32_t n) {
         static double last;
         if (host_seconds() - last > 2.0) {
             last = host_seconds();
-            uint32_t base = R32(GAME_UI_PAGES), b = base ? R32(base + 0x14) : 0, e = base ? R32(base + 0x18) : 0;
+            uint32_t base = R32(GAME_UI_PAGES), b = base ? R32(base + GAME_UI_VEC) : 0, e = base ? R32(base + GAME_UI_VEC + 4) : 0;
             fprintf(stderr, "[pages] base %08x count %d id9d84ec %08x:", base, b ? (int)(e - b) / 8 : -1, R32(0x9d84ecu));
             for (uint32_t q = b; b && q < e && q < b + 8 * 8; q += 8) fprintf(stderr, " %08x/%08x crc %08x", R32(q), R32(q + 4), R32(q) ? page_crc(R32(q)) : 0);
             fprintf(stderr, " -> %s\n", ui_menu() ? "menu" : "play");
+            if (base && getenv("RC_LOG_PAGES")[0] == '2') {   /* RC_LOG_PAGES=2: raw words of the object (new games) */
+                fprintf(stderr, "[pages] raw");
+                for (uint32_t k = 0; k < 0x40; k += 4) fprintf(stderr, " %08x", R32(base + k));
+                fprintf(stderr, "\n");
+            }
         }
     }
     seek_step();
@@ -111,7 +119,10 @@ static int menu_page(uint32_t crc) {
         "P_ArtworkGallery", "P_ArtworkCharacterGallery", "P_ArtworkIllustrationGallery", "P_GenericGallery", "P_Credits",
         "P_InGameMenu", "P_PreInGameMenu", "P_SaveGame", "P_SaveConfirmation", "P_GameOver", "P_MessageBox",
         /* Warrior Within's extras */
-        "P_VideoGallery", "P_Illustrations", "P_Environments", "P_Characters", "P_WeaponGallery" };
+        "P_VideoGallery", "P_Illustrations", "P_Environments", "P_Characters", "P_WeaponGallery",
+        /* Sands of Time's message boxes */
+        "P_MessageBoxOK", "P_MessageBoxYN", "P_MessageBoxYNTimed", "P_MessageBoxYNC", "P_MessageBoxInfo",
+        "P_MessageBoxInsertCD" };
     enum { N = sizeof names / sizeof *names };
     static uint32_t h[N];
     static int init;
@@ -174,7 +185,7 @@ static uint32_t page_crc(uint32_t page) {
 static int ui_menu(void) {
     uint32_t base = R32(GAME_UI_PAGES);
     if (!base) return 0;
-    uint32_t b = R32(base + 0x14), e = R32(base + 0x18);
+    uint32_t b = R32(base + GAME_UI_VEC), e = R32(base + GAME_UI_VEC + 4);
     if (!b || e <= b || e - b > 64 * 8) return 0;
     for (uint32_t q = b; q < e; q += 8) {
         uint32_t page = R32(q);
