@@ -41,6 +41,9 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
   sound by ear, FPS in later areas.
 - Open: tutorial text shows blank key names ("Use Move [, , , ]"); our DirectInput names keys "Key N", so the
   blanks come from elsewhere. "Use safe mode settings?" after a force-stopped run is answered No (harmless).
+- Rebranded app UI (2026-11-22): launcher = moonlit night over Azad, hourglass sigil, turquoise logo, sand-gold
+  frames, turquoise press glow; overlay gold with turquoise press; icon hourglass recoloured (pop-sot/tools/sot_ui_patch.py
+  for icon + overlay colours; Ui.java edited directly). Icon not yet seen on the phone.
 - Scripts (pop-sot/tools): rebuild.sh [translate], phone_run.sh, push_game.sh, to_level.sh (profile 2 -> level).
 
 ## Next
