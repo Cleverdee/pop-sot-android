@@ -328,7 +328,7 @@ final class Ui {
         @Override protected void onDraw(Canvas c) {
             float w = getWidth(), h = getHeight();
             /* PRINCE OF PERSIA, as wide as fits */
-            String a = "PRINCE OF PERSIA", b = "WARRIOR WITHIN";
+            String a = "PRINCE OF PERSIA", b = "THE SANDS OF TIME";
             float size = h * 0.4f;
             mText.setLetterSpacing(0.08f);
             mText.setShader(null);

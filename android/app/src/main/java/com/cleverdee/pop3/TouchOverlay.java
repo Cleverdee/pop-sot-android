@@ -123,8 +123,7 @@ public class TouchOverlay extends View {
           K("rewind", "Rewind", I_SANDS, HID_R, 0, true, 1.25f, 5.45f, 0.5f),
           K("cam", "Camera", I_CAMERA, HID_X, 0, true, 2.6f, 5.6f, 0.4f),
           K("look", "Look", I_EYE, HID_F, 0, true, 3.85f, 5.6f, 0.4f),
-          K("enter", "Enter", I_CHECK, HID_ENTER, 0, true, 1.0f, 8.15f, 0.42f),
-          K("map", "Map", I_MAP, HID_TAB, 0, true, 2.2f, 8.15f, 0.42f) },   /* Warrior Within: Tab opens the map */
+          K("enter", "Enter", I_CHECK, HID_ENTER, 0, true, 1.0f, 8.15f, 0.42f) },   /* (Sands of Time has no map) */
         { /* batting */ R("shot", "Shot", I_BAT, Y, F_SHOT, 1.6f, 1.6f, 0.8f),
           R("charge", "Charge", I_RUN, B, F_SHOT, 1.55f, 3.55f, 0.55f),
           R("leave", "Leave", I_HAND, X, 0, 3.3f, 1.45f, 0.55f),

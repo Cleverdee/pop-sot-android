@@ -32,15 +32,16 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
 - Ghidra: 9574 functions (~10 min). Translate: 17791 functions, 61 files, max 4.8 MB, 3 min. out_all stamped.
 
 ## Now (2026-11-22)
-- Boots through logos into the opening level and the profile menu (~43-51 FPS at 540p). Fixed on the way:
-  guest setjmp/longjmp (D3DX's libjpeg probe), no-return calls, bare-ret callback (commit 4d15359).
-- Controls in progress: page stack layout found (GAME_UI_VEC 0x10), cursor texture guessed (e416983e, 128x128),
-  SoT message-box page names added. Built, NOT yet checked on the phone (phone disconnected at 00:10).
-- Check next run: RC_LOG_PAGES=2 shows pages + "menu"/"play"; menu taps land on items; play layout (stick, jump)
-  only in play; [dinput] game mouse scale line (confirms GAME_MOUSE_OPT); camera drag direction/speed.
-- "Use safe mode settings?" MessageBox shows at every start (PrinceSM file marks a crash): check our answer.
-- Launcher still says "Warrior Within" under the title (Ui.java / MenuActivity heading).
-- Scripts: pop-sot/tools rebuild.sh [translate], phone_run.sh (crash.txt -> Continue), push_game.sh.
+- Plays: logos -> profile menu -> new profile -> main menu -> Start New Game -> opening cut-scene -> control of
+  the Prince in the opening courtyard, 50-60 FPS at 540p. Checked on the phone (A17).
+- Controls working (checked): menu/play detection (page stack GAME_UI_VEC 0x10), menu taps select items (cursor
+  e416983e), Skip layout during movies, stick walks the Prince (sends W/A/S/D: SoT ignores the pad by default,
+  STICK_KEYS in TouchOverlay.java), Jump. Map button removed (no map in SoT). Launcher says The Sands of Time.
+- Not yet checked: camera drag (the opening courtyard has a fixed camera), Attack/Wall/Rewind/Look in a fight,
+  sound by ear, FPS in later areas.
+- Open: tutorial text shows blank key names ("Use Move [, , , ]"); our DirectInput names keys "Key N", so the
+  blanks come from elsewhere. "Use safe mode settings?" after a force-stopped run is answered No (harmless).
+- Scripts (pop-sot/tools): rebuild.sh [translate], phone_run.sh, push_game.sh, to_level.sh (profile 2 -> level).
 
 ## Next
 1. Ask the user before installing/pushing to the phone (other ports share it). Push: POP.EXE, *.BF/prince.bf,
