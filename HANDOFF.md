@@ -1,6 +1,7 @@
 # Prince of Persia: The Sands of Time - Android port hand-over
 
-Tree: `E:\cricket-apk\pop-sot\src`, branch `sot-port` (local only, no remote yet), cloned from the WW tree at v0.1.8
+Tree: `E:\cricket-apk\pop-sot\src`, branch `sot-port` -> remote `cleverdee` main (github.com/Cleverdee/pop-sot-android,
+public). Released v0.1.0 on 2026-11-22 (APK work\PrinceOfPersiaSoT-v0.1.0.apk; notes workelease_notes_v0.1.0.md), cloned from the WW tree at v0.1.8
 (`ce73c2e`). Package `com.cleverdee.popsot` (Java package/JNI stay `com.cleverdee.pop3`, lib `libpop3.so`).
 Work files outside the repo: `E:\cricket-apk\pop-sot\work` (pop.exe = GOG POP.EXE as installed, functions.json,
 ghidra.log, translate.log, build.log). Game folder: `E:\cricket-apk\Prince of Persia The Sands of Time`.
@@ -32,6 +33,8 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
 - Ghidra: 9574 functions (~10 min). Translate: 17791 functions, 61 files, max 4.8 MB, 3 min. out_all stamped.
 
 ## Now (2026-11-22)
+- Open bug to fix next: guards drawn without legs (torso/head fine; the Prince fine). Not the VS constant cap
+  (game doesn't read [CAPS]). Capture with files/snap.txt + RC_CAP_RANGE while a guard is on screen.
 - Plays: logos -> profile menu -> new profile -> main menu -> Start New Game -> opening cut-scene -> control of
   the Prince in the opening courtyard, 50-60 FPS at 540p. Checked on the phone (A17).
 - Controls working (checked): menu/play detection (page stack GAME_UI_VEC 0x10), menu taps select items (cursor
