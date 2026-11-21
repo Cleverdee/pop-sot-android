@@ -297,6 +297,35 @@ void cpuid(CPU *c) {
 uint64_t (*g_rdtsc_hook)(void);   /* set by the host for deterministic runs */
 int g_preempt_on;
 __thread uint32_t recomp_resume;
+
+/* Guest setjmp/longjmp (see cpu.h). MSVC's jmp_buf: +0 ebp, +4 ebx, +8 edi, +0xc esi, +0x10 esp at the setjmp
+   call (pointing at its return address), +0x14 return address, +0x18 SEH registration (fs:[0]), +0x1c try level.
+   Per thread, the most recent armed frame per guest jmp_buf. A longjmp to a jmp_buf whose C frame has returned
+   would be undefined in the guest too. */
+static __thread struct { uint32_t jb; jmp_buf *host; } g_jbs[16];
+static __thread unsigned g_jb_next;
+void rc_jb_arm(CPU *c, jmp_buf *host) {
+    uint32_t jb = R32(c->esp);   /* cdecl: the argument is still on the stack right after the call */
+    for (unsigned i = 0; i < 16; i++)
+        if (g_jbs[i].jb == jb) { g_jbs[i].host = host; return; }
+    g_jbs[g_jb_next].jb = jb; g_jbs[g_jb_next].host = host;
+    g_jb_next = (g_jb_next + 1) % 16;
+}
+void rc_longjmp(CPU *c) {
+    uint32_t jb = R32(c->esp + 4), val = R32(c->esp + 8);   /* [esp] = return address of the call */
+    jmp_buf *host = NULL;
+    for (unsigned i = 0; i < 16; i++)
+        if (g_jbs[i].jb == jb) host = g_jbs[i].host;
+    if (!host) guest_trap(c, R32(jb + 0x14), "longjmp to a jmp_buf no translated setjmp armed");
+    static int logged;
+    if (logged++ < 5) fprintf(stderr, "[rt] longjmp %08x -> %08x (value %u)\n", jb, R32(jb + 0x14), val);
+    /* the guest _longjmp unwinds SEH frames to the one current at setjmp: restore the chain head */
+    if (c->fs_base) W32(c->fs_base, R32(jb + 0x18));
+    c->ebp = R32(jb); c->ebx = R32(jb + 4); c->edi = R32(jb + 8); c->esi = R32(jb + 0xc);
+    c->esp = R32(jb + 0x10) + 4;   /* as after __setjmp3 returned */
+    c->eax = val ? val : 1;
+    longjmp(*host, 1);
+}
 void (*g_preempt_fn)(void);       /* the deterministic scheduler's yield */
 void guest_preempt(CPU *c) { c->preempt_ticks = 0; if (g_preempt_fn) g_preempt_fn(); }
 void rdtsc(CPU *c) {

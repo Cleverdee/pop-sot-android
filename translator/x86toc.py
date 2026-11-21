@@ -79,7 +79,7 @@ _X87_REWRITES = [
     (re.compile(r"\bC->fpu_cw\b"), "c->fpu_cw"),
 ]
 # calls that see the whole CPU: write back before them; after an ordinary call, reload everything
-_SYNC_CALL = re.compile(r"\b(f_[0-9a-f]{8}|call_indirect|jump_indirect|guest_trap|cpuid|rdtsc|trace_insn)"
+_SYNC_CALL = re.compile(r"\b(f_[0-9a-f]{8}|call_indirect|jump_indirect|guest_trap|cpuid|rdtsc|trace_insn|rc_landed|rc_longjmp)"
                         r"\(c\b[^;]*\);(\s*return;)?")
 _RETURN = re.compile(r"\breturn;")
 _WRITES = [   # (pattern, bits, or a function of the match giving the bits)
@@ -93,7 +93,7 @@ _WRITES = [   # (pattern, bits, or a function of the match giving the bits)
     (re.compile(r"\bmem(?:cpy|set)\((?:\(uint8_t \*\))?&M_\[(\d)\]"), lambda m: MM_BIT[int(m.group(1))]),
 ]
 # helpers that receive the CPU but read only state that stays there (the control word, written through)
-_CPU_ONLY = {"fpu_to_int32", "fpu_to_int64", "fpu_round", "fpu_sync_rounding", "fpu_save", "fpu_restore"}
+_CPU_ONLY = {"rc_jb_arm", "fpu_to_int32", "fpu_to_int64", "fpu_round", "fpu_sync_rounding", "fpu_save", "fpu_restore"}
 _GOTO = re.compile(r"goto L_([0-9a-f]{8});")
 
 
@@ -315,6 +315,17 @@ class FunctionTranslator:
 
     def call_stmt(self, ins, target_expr, direct_target=None):
         ret = ins.address + ins.size
+        name = self.p.functions.get(direct_target, {}).get("name") if direct_target is not None else None
+        if name in SETJMP_NAMES and direct_target in self.p.entries:
+            # setjmp: the guest function fills the guest jmp_buf as usual; then a host jmp_buf in this C function's
+            # frame is armed for it (runtime rc_jb_arm). A guest longjmp (rc_longjmp) sets the CPU registers from
+            # the guest jmp_buf and lands here, as if __setjmp3 had returned again: reload them from the CPU.
+            # (Sands of Time: the statically linked D3DX probes images with libjpeg, which longjmps on non-JPEGs.)
+            self.jbs = getattr(self, "jbs", set()) | {ret}
+            return (f"PUSH32(c, 0x{ret:08x}u); f_{direct_target:08x}(c); rc_jb_arm(c, &JB_{ret:08x}); "
+                    f"if (setjmp(JB_{ret:08x})) rc_landed(c);")
+        if name in LONGJMP_NAMES:
+            return f"PUSH32(c, 0x{ret:08x}u); rc_longjmp(c);"
         if direct_target is not None:
             if direct_target in self.p.entries:
                 return f"PUSH32(c, 0x{ret:08x}u); f_{direct_target:08x}(c);"
@@ -355,6 +366,11 @@ class FunctionTranslator:
                     if edges is not None:
                         edges.extend((a, t) for t in self.p.jumptables.get(a, []) if inside(t))
                 if self.is_terminator(ins):
+                    break
+                if m == "call" and op is not None and op.type == CS_OP_IMM and self.p.no_return(op.imm):
+                    # nothing follows a call that never returns (MSVC: _CxxThrowException, exit): the bytes after it
+                    # are often data, and decoding them made the whole function a "data decoded as code" stub (Sands
+                    # of Time 0x41b9a0, a throw at its end). The emitted fall-through is a jump to that address.
                     break
                 if edges is not None:
                     edges.append((a, a + ins.size))
@@ -427,6 +443,7 @@ class FunctionTranslator:
             lines.append("    uint32_t rs_ = recomp_resume; recomp_resume = 0;")
         lines += ["    PREEMPT_POLL(c);",
                  f"    {cache.load()}"]
+        lines += [f"    jmp_buf JB_{a:08x};" for a in sorted(getattr(self, "jbs", ()))]
         for (ins, _), stmt in zip(body, texts):
             if ins is not None:
                 if ins.address in self.labels:
@@ -1363,6 +1380,14 @@ class Program:
         self.trace = False
         self.add_pointer_entries(pe)
 
+    # Ghidra names of statically linked MSVC CRT functions that never return (direct calls only)
+    NO_RETURN = ("_CxxThrowException", "__CxxThrowException@8", "_exit", "exit", "__exit", "abort", "_amsg_exit",
+                 "__amsg_exit", "_invoke_watson", "__invoke_watson", "__report_gsfailure", "___report_gsfailure",
+                 "_invalid_parameter_noinfo_noreturn", "_abort", "___crtExitProcess", "fast_error_exit")
+
+    def no_return(self, target):
+        f = self.functions.get(target)
+        return bool(f) and f.get("name") in self.NO_RETURN
     def add_pointer_entries(self, pe):
         """Code reached only through pointers Ghidra never turned into functions (callbacks passed as
         `push offset label`, function tables in .data). Accept a target only if it looks like a function
@@ -1421,7 +1446,16 @@ class Program:
                 return False
             return len(list(md.disasm(self.code(t, t + 32), t, count=3))) == 3
 
-        cands = {v for v in imms if accept(v)} | cross
+        def bare_ret(t):
+            # a callback that is just the `ret N` ending another function (identical-code folding: an empty
+            # method sharing the tail of one Ghidra never claimed). Sands of Time stores 0x743723 with
+            # `mov [ebp-0x29c], 0x743723` and calls it during the intro. A ret is always safe as an entry.
+            if not unowned_code(t):
+                return False
+            i = next(md.disasm(self.code(t, t + 4), t, count=1), None)
+            return i is not None and i.mnemonic in ("ret", "retn")
+
+        cands = {v for v in imms if accept(v) or bare_ret(v)} | cross
         for name in (n for n in (".rdata", ".data") if n in secs):
             a, b = secs[name]
             for va in range(a, b - 3, 4):
@@ -1691,6 +1725,10 @@ class Program:
             todo.extend(self.direct_callees(self.functions[e]))
         return seen
 
+
+# Ghidra names of the MSVC CRT's setjmp/longjmp (direct calls get host setjmp/longjmp, see call_stmt)
+SETJMP_NAMES = {"__setjmp3", "_setjmp", "__setjmp", "_setjmp3"}
+LONGJMP_NAMES = {"_longjmp", "longjmp"}
 
 JUNK_OPS = {"outsb", "outsd", "outsw", "insb", "insd", "insw", "in", "out", "arpl", "bound", "daa", "das", "aaa",
             "aas", "aam", "aad", "into", "int1", "lcall", "ljmp", "sldt", "les", "lds", "popaw", "pushaw", "retf",

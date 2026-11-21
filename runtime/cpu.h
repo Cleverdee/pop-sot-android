@@ -311,6 +311,13 @@ extern int g_preempt_on;
 /* set by an interior pointer entry's stub right before it calls its host function, which jumps to that
    address first thing (one translated body for a run of code many pointer entries land in) */
 extern __thread uint32_t recomp_resume;
+/* Guest setjmp/longjmp (MSVC __setjmp3/_longjmp, called directly): after the guest setjmp returns, the translated
+   caller arms a host jmp_buf in its own frame for that guest jmp_buf (the guest's [esp] then); rc_longjmp loads
+   the registers the guest jmp_buf saved and lands there; rc_landed is a marker (registers reloaded after it). */
+#include <setjmp.h>
+void rc_jb_arm(CPU *c, jmp_buf *host);
+void rc_longjmp(CPU *c) __attribute__((noreturn));
+static inline void rc_landed(CPU *c) { (void)c; }
 void guest_preempt(CPU *c);
 #define PREEMPT_QUANTUM 100000u
 #define PREEMPT_POLL(c) do { if (__builtin_expect(g_preempt_on, 0) && ++(c)->preempt_ticks >= PREEMPT_QUANTUM) guest_preempt(c); } while (0)
