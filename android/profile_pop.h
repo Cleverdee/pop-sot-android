@@ -39,15 +39,17 @@
       "FullscreenGamma=1\nAllowDisableVSync=1\nShadowScaling=1\nColorDiffusion=1\nForceVSFog=1\nInvertFogRange=0\n" \
       "ZEnableFix=0\n" },
 
-/* Game addresses the host reads. 0 = not found in SoT yet: the host features using them stay off (no UI page
-   list -> no menu/play detection; no mouse option -> camera without the game's mouse scale; no pool nudge).
-   To find: tools/port_addr.py (outer pop-ww/tools) from the WW values, then RC_LOG_PAGES / RC_LOG_UITEX. */
-#define GAME_UI_PAGES     0u
-#define GAME_MOUSE_OPT    0u
-#define GAME_MOUSE_ADD    0u
-#define GAME_MOUSE_MUL    0u
-#define GAME_POOL_WORKER  0u
-#define GAME_POOL_VTABLE  0u
+/* Game addresses the host reads, mapped from the WW ones with pop-ww/tools/port_addr.py (2026-11-21; votes in
+   brackets). Mouse add/mul hold 1.0f / 1.1f as in WW. Not confirmed at run time yet. 0 = not found (feature off). */
+#define GAME_UI_PAGES     0x0080bbd8u   /* [15 of 18] */
+#define GAME_MOUSE_OPT    0x0080d08cu   /* [15; 0x80d088 had 6] */
+#define GAME_MOUSE_ADD    0x007a7f24u
+#define GAME_MOUSE_MUL    0x007a9b28u
+#define GAME_POOL_WORKER  0x0065d4e0u   /* sound I/O pool worker (thread start), vtable below */
+#define GAME_POOL_VTABLE  0x007af57cu
+/* SoT movies (Video\*.int, plain BIKi, no UBV header): logos/intro/loading 640x448, cut-scenes and visions 640x346.
+   None plays inside play like WW's map/power-up movies, so 640x448 counts as a cut-scene (Skip layout). */
+#define GAME_INPLAY_MOVIE_448 0
 #define GAME_CURSOR_TEX   0u
 #define GAME_CURSOR_HOT_X 2.f
 #define GAME_CURSOR_HOT_Y 3.f

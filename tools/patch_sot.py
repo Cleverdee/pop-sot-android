@@ -39,4 +39,45 @@ for w, h in ((0x320, 0x258), (0x400, 0x300)):
         done += len(hits)
         print("  %dx%d default -> host size in %s" % (w, h, ", ".join(hits)))
 
+# The Hardware.INI Resolutions parser (FUN_00415aa0, WW's FUN_00415d30) keeps only 4:3 modes (640x480 ... 2048x1536):
+# a phone-shaped host mode would be dropped and the game would quit (FindAvailableDisplayMode). The 640x480 slot takes
+# the host size, as in WW.
+for f in glob.glob(sys.argv[1] + "/*.c"):
+    s = open(f).read()
+    if "void f_00415aa0(" not in s:
+        continue
+    i = s.index("void f_00415aa0(")
+    j = s.index("\n}\n", i)
+    body = s[i:j]
+    b2 = body.replace("(uint32_t)0x280u); /* cmp eax, 0x280 */",
+                      "({ extern uint32_t host_video_width(void); host_video_width(); })); /* cmp eax, 0x280 (host size) */") \
+             .replace("(uint32_t)0x1e0u); /* cmp dword ptr [esp + 0x1c], 0x1e0 */",
+                      "({ extern uint32_t host_video_height(void); host_video_height(); })); /* cmp dword ptr [esp + 0x1c], 0x1e0 (host size) */")
+    if b2 != body and "cmp eax, 0x320" in body:
+        open(f, "w").write(s[:i] + b2 + s[j:])
+        done += 2
+        print("  Resolutions parser f_00415aa0: 640x480 slot -> host size")
+    else:
+        print("  WARNING: Resolutions parser f_00415aa0 not patched (code changed?)")
+
+# The menu slider draw code (FUN_00718060, the same code as WW 0x8355d0) places the knob at
+# (value - min) * width / (max - min); the host's single resolution gives max == min and the idiv traps when the
+# Graphics page opens. A zero range puts the knob at the start.
+for f in glob.glob(sys.argv[1] + "/*.c"):
+    s = open(f).read()
+    s2 = s
+    for addr in ("0x007182c2u",):
+        trap = 'guest_trap(c, %s, "divide by zero"); }' % addr
+        k = s2.find(trap)
+        if k < 0 or "imul eax, ebx" not in s2[k - 2000:k]:
+            continue
+        a = s2.rfind("if (!d_) {", 0, k)
+        s2 = s2[:a] + "if (!d_) { r->eax = 0; r->edx = 0; } else {" + s2[k + len(trap):]
+        e = s2.find("} /* idiv dword ptr [esp + 0x18] */", a)
+        s2 = s2[:e] + "} } /* idiv dword ptr [esp + 0x18] (zero range -> 0) */" + s2[e + len("} /* idiv dword ptr [esp + 0x18] */"):]
+        done += 1
+        print("  slider idiv 0x7182c2: zero range -> 0")
+    if s2 != s:
+        open(f, "w").write(s2)
+
 print(f"patch_sot: {done} patch(es)")

@@ -622,8 +622,12 @@ int bink_movie_open(void) {
     /* Warrior Within also plays 640x448 movies inside play: the map pages (NavMap*) and the power-up prompts
        (UP_*, e.g. the spider sword), which wait for a game key. Those keep the play controls, not the Skip-only
        cut-scene layout. */
+    /* GAME_INPLAY_MOVIE_448 0 (Sands of Time): its 640x448 movies are logos/intro/loading, all cut-scenes */
+#ifndef GAME_INPLAY_MOVIE_448
+#define GAME_INPLAY_MOVIE_448 1
+#endif
     int open = 0;
-    for (Movie *m = g_movies; m; m = m->next) if (!(m->w == 640 && m->h == 448)) open = 1;
+    for (Movie *m = g_movies; m; m = m->next) if (!(GAME_INPLAY_MOVIE_448 && m->w == 640 && m->h == 448)) open = 1;
     pthread_mutex_unlock(&g_lock);
     return open;
 }
