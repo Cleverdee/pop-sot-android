@@ -24,7 +24,7 @@ import java.util.List;
 /* The start screen: play, or manage the game files. If the game crashed last time, a crash-report screen
    comes first. */
 public class MenuActivity extends Activity {
-    private static final String GAME = "Prince of Persia: Warrior Within";
+    private static final String GAME = "Prince of Persia: The Sands of Time";
 
     private LinearLayout mRoot;
     private boolean mMain;

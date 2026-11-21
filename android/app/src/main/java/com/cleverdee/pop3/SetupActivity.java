@@ -53,7 +53,7 @@ public class SetupActivity extends Activity {
     static final String EXTRA_MANAGE = "manage";   /* opened from the start screen: show the game-files screen */
     static final String IMPORTED = "import_manifest.txt";
     private static final String MANIFEST = "game_manifest.txt";
-    private static final String EXE = "POP2.EXE";
+    private static final String EXE = "POP.EXE";
     private static final int PICK_ZIP = 1, PICK_FOLDER = 2;
     private static final long SPARE_BYTES = 200L << 20;   /* left free after copying */
     private static final int SOFT = Ui.SOFT, DIM = Ui.DIM;
@@ -114,7 +114,7 @@ public class SetupActivity extends Activity {
             button("Play", v -> startGame());
             text("Replace them with another copy:", 14, DIM);
         } else {
-            text("This app needs the game files from your own PC copy of Prince of Persia: Warrior Within.", 16, SOFT);
+            text("This app needs the game files from your own PC copy of Prince of Persia: The Sands of Time.", 16, SOFT);
         }
         button("Choose a .zip file", v -> pick(PICK_ZIP));
         button("Choose a folder", v -> pick(PICK_FOLDER));
@@ -126,10 +126,10 @@ public class SetupActivity extends Activity {
     private void showHelp() {
         page();
         Ui.heading(mRoot, "Getting the game files");
-        text("1. On your PC, find the folder Prince of Persia: Warrior Within is installed in. For the GOG copy it's "
-           + "usually\nC:\\Program Files (x86)\\GOG Galaxy\\Games\\Prince of Persia Warrior Within\n"
-           + "and has pop2.exe, prince.bf and the Video folder in it.", 15, SOFT);
-        text("2. Copy pop2.exe as GOG installed it: the app runs the packed exe as it is. (One unpacked with PrepareGame.bat or upx -d works too.)", 15, SOFT);
+        text("1. On your PC, find the folder Prince of Persia: The Sands of Time is installed in. For the GOG copy it's "
+           + "usually\nC:\\Program Files (x86)\\GOG Galaxy\\Games\\Prince of Persia The Sands of Time\n"
+           + "and has POP.EXE, POPData.BF, prince.bf and the Video folder in it.", 15, SOFT);
+        text("2. Copy POP.EXE as GOG installed it: the app runs it as it is, nothing to unpack.", 15, SOFT);
         text("3. Copy that folder to your phone (with a USB cable, a memory card or any app you like), or zip it "
            + "first: right-click > Compress to > ZIP File.", 15, SOFT);
         text("4. Come back here, tap \"Choose a folder\" or \"Choose a .zip file\" and pick it.", 15, SOFT);
@@ -287,7 +287,7 @@ public class SetupActivity extends Activity {
         return out;
     }
 
-    /* the folder holding POP2.EXE: the picked one, or one up to three levels inside it */
+    /* the folder holding POP.EXE: the picked one, or one up to three levels inside it */
     private String findGameRoot(Uri tree, String id, int depth) {
         List<Doc> kids = children(tree, id);
         for (Doc d : kids) if (!d.isDir() && d.name.equalsIgnoreCase(EXE)) return id;
@@ -306,8 +306,8 @@ public class SetupActivity extends Activity {
     private void importFolder(Uri tree) throws IOException, Problem {
         String root = findGameRoot(tree, DocumentsContract.getTreeDocumentId(tree), 3);
         if (root == null)
-            throw new Problem("There's no pop2.exe in that folder. Choose the Prince of Persia: Warrior Within game folder "
-                            + "(the one with pop2.exe, prince.bf and Video).");
+            throw new Problem("There's no POP.EXE in that folder. Choose the Prince of Persia: The Sands of Time game folder "
+                            + "(the one with POP.EXE, prince.bf and Video).");
         long total = treeSize(tree, root);
         checkSpace(total);
         File stage = stagingDir();
@@ -343,12 +343,12 @@ public class SetupActivity extends Activity {
     private void install(File stage, List<String[]> copied, Runnable after) throws IOException, Problem {
         File exe = findExe(stage, 4);
         if (exe == null)
-            throw new Problem("There's no pop2.exe in it. Zip the Prince of Persia: Warrior Within game folder "
-                            + "(the one with pop2.exe, prince.bf and Video).");
+            throw new Problem("There's no POP.EXE in it. Zip the Prince of Persia: The Sands of Time game folder "
+                            + "(the one with POP.EXE, prince.bf and Video).");
         File root = exe.getParentFile();
         if (!exe.getName().equals(EXE) && !exe.renameTo(new File(root, EXE))) throw new IOException("rename " + exe);
         if (findChild(root, "prince.bf") == null)
-            throw new Problem("prince.bf isn't next to POP2.EXE. Copy the whole installed game folder.");
+            throw new Problem("prince.bf isn't next to POP.EXE. Copy the whole installed game folder.");
         progress("Checking the game version...", 0, -1);
         String want = BuildConfig.EXE_SHA256;
         boolean known = want.isEmpty() || sha256(new File(root, EXE)).startsWith(want);
@@ -376,8 +376,8 @@ public class SetupActivity extends Activity {
         mBusy = false;
         page();
         Ui.heading(mRoot, "A different version of the game");
-        text("This pop2.exe isn't the version this app was made from, so the game will probably not start. "
-           + "The app needs the pop2.exe of the GOG release, as installed (packed) or unpacked with upx -d.",
+        text("This POP.EXE isn't the version this app was made from, so the game will probably not start. "
+           + "The app needs the POP.EXE of the GOG release, as installed.",
              15, SOFT);
         button("Try it anyway", v -> after.run());
         button("Choose other files", v -> showWelcome());

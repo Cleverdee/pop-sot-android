@@ -1399,7 +1399,22 @@ static const ComMethod shobj_methods[] = {
     { "QueryInterface", 2, com_QueryInterface }, { "AddRef", 0, com_AddRef }, { "Release", 0, com_Release },
     { "GetDevice", 1, shobj_GetDevice }, { "GetFunction", 2, shobj_GetFunction },
 };
-static ComInterface IDirect3DVertexDeclaration9_i = { "IDirect3DVertexDeclaration9", shobj_methods, 5, 0 };
+/* IDirect3DVertexDeclaration9::GetDeclaration(elements, count*): the elements as created, count including
+   D3DDECL_END. Slot 4 used to be the shaders' GetFunction (0 elements): Assassin's Creed caches declarations by
+   comparing their elements, never matched, created a new one per lookup and overflowed its cache (ac1 a6efdec). */
+W(vdecl_GetDeclaration) {
+    Shader *sh = com_data(THIS);
+    uint32_t n = sh && sh->elems ? sh->n_elems : 0, data = ARG(1), cnt = ARG(2);
+    if (!cnt) RET(3, D3DERR_INVALIDCALL);
+    if (data && n) memcpy(HP(data), sh->elems, 8 * n);
+    W32(cnt, n);
+    RET(3, S_OK);
+}
+static const ComMethod vdecl_methods[] = {
+    { "QueryInterface", 2, com_QueryInterface }, { "AddRef", 0, com_AddRef }, { "Release", 0, com_Release },
+    { "GetDevice", 1, shobj_GetDevice }, { "GetDeclaration", 2, vdecl_GetDeclaration },
+};
+static ComInterface IDirect3DVertexDeclaration9_i = { "IDirect3DVertexDeclaration9", vdecl_methods, 5, 0 };
 static ComInterface IDirect3DVertexShader9_i = { "IDirect3DVertexShader9", shobj_methods, 5, 0 };
 static ComInterface IDirect3DPixelShader9_i = { "IDirect3DPixelShader9", shobj_methods, 5, 0 };
 

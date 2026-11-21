@@ -308,6 +308,9 @@ void rdtsc(CPU *c);
    so preemption points are the same in every run, and threads that spin on memory another thread writes
    (no Windows call in the loop) still let it run. */
 extern int g_preempt_on;
+/* set by an interior pointer entry's stub right before it calls its host function, which jumps to that
+   address first thing (one translated body for a run of code many pointer entries land in) */
+extern __thread uint32_t recomp_resume;
 void guest_preempt(CPU *c);
 #define PREEMPT_QUANTUM 100000u
 #define PREEMPT_POLL(c) do { if (__builtin_expect(g_preempt_on, 0) && ++(c)->preempt_ticks >= PREEMPT_QUANTUM) guest_preempt(c); } while (0)

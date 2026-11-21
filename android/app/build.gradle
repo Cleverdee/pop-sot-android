@@ -13,11 +13,11 @@ android {
     ndkVersion System.getenv('RC_NDK_VERSION') ?: '27.2.12479018'
 
     defaultConfig {
-        applicationId 'com.cleverdee.popww'
+        applicationId 'com.cleverdee.popsot'
         minSdk 29
         targetSdk 35
-        versionCode 9
-        versionName '0.1.8'
+        versionCode 1
+        versionName '0.1.0'
         // the first 16 hex digits of the SHA-256 of the exe the code was translated from (build.ps1 sets it): the
         // import screen warns when the player's copy differs. Empty: no check.
         buildConfigField 'String', 'EXE_SHA256', "\"${System.getenv('RC_EXE_HASH') ?: ''}\""

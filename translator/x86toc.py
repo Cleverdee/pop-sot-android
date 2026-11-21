@@ -323,7 +323,7 @@ class FunctionTranslator:
 
     # ------------------------------------------------------------ translation
 
-    def decode(self):
+    def decode(self, roots=(), edges=None):
         """Recursive-descent disassembly from the entry. Ghidra's body ranges are only used as the
         span a branch may stay within; they can split instructions (e.g. around shared bytes)."""
         lo = min(a for a, _ in self.f["ranges"])
@@ -333,7 +333,7 @@ class FunctionTranslator:
         # Pointer-derived entries can sit mid-function; they don't split it (that would strand branch
         # targets in another fragment), so only Ghidra's function starts stop decoding.
         inside = lambda t: lo <= t < hi and (t == self.entry or t not in self.p.ghidra_entries)
-        seen, todo = {}, [self.entry]
+        seen, todo = {}, [self.entry] + list(roots)
         while todo:
             a = todo.pop()
             while a not in seen and inside(a):
@@ -346,12 +346,18 @@ class FunctionTranslator:
                 if (m == "jmp" or (m.startswith("j") and m[1:] in COND) or m in ("jecxz", "jcxz", "loop")) \
                         and op is not None and op.type == CS_OP_IMM and inside(op.imm):
                     todo.append(op.imm)
+                    if edges is not None:
+                        edges.append((a, op.imm))
                 if m == "jmp" and op is not None and op.type != CS_OP_IMM:
                     if not self.p.jumptables.get(a):  # Ghidra lists unresolved jumps with no targets
                         self.p.jumptables[a] = self.recover_table(op, inside)
                     todo.extend(t for t in self.p.jumptables.get(a, []) if inside(t))
+                    if edges is not None:
+                        edges.extend((a, t) for t in self.p.jumptables.get(a, []) if inside(t))
                 if self.is_terminator(ins):
                     break
+                if edges is not None:
+                    edges.append((a, a + ins.size))
                 a += ins.size
         return sorted(seen.values(), key=lambda i: i.address)
 
@@ -381,13 +387,17 @@ class FunctionTranslator:
         return ins.mnemonic == "xchg" and any(op.type == CS_OP_MEM for op in ins.operands)
 
     def translate(self):
-        insns = self.decode()
+        insns = self.decode(getattr(self.p, "hosted", {}).get(self.entry, ()))
         self.insn_addrs = {i.address for i in insns}
         body = []
         unsupported = []
         # The body is emitted in address order, but code can sit BELOW the entry: Ghidra merges a function that
         # another one tail-jumps into (Two Thrones: 0x436040 ends in `jmp 0x435ba0`, so 0x435ba0.. becomes part of
         # 0x436040). Without this jump the C function would start running at the lowest address instead.
+        hosted = getattr(self.p, "hosted", {}).get(self.entry, ())
+        for t in hosted:   # interior pointer entries folded into this body (Program.fold_interior_entries)
+            self.cur = self.entry
+            body.append((None, f"if (rs_ == 0x{t:08x}u) {self.target_stmt(t)}"))
         if insns and insns[0].address != self.entry:
             self.cur = self.entry
             body.append((None, self.target_stmt(self.entry)))
@@ -412,7 +422,10 @@ class FunctionTranslator:
                     for ins, stmt in body]
         cache = RegisterCache(body)
         texts = cache.run()
-        lines = [f"void f_{self.entry:08x}(CPU *c) {{ /* {self.f['name']} */", "    PREEMPT_POLL(c);",
+        lines = [f"void f_{self.entry:08x}(CPU *c) {{ /* {self.f['name']} */"]
+        if hosted:   # read before PREEMPT_POLL, which can run other guest code on this thread
+            lines.append("    uint32_t rs_ = recomp_resume; recomp_resume = 0;")
+        lines += ["    PREEMPT_POLL(c);",
                  f"    {cache.load()}"]
         for (ins, _), stmt in zip(body, texts):
             if ins is not None:
@@ -427,10 +440,14 @@ class FunctionTranslator:
 
     @staticmethod
     def is_terminator(ins):
-        return ins.mnemonic in ("jmp", "ret", "retn", "int3", "hlt", "ud2")
+        return ins.mnemonic in ("jmp", "ret", "retn", "int3", "hlt", "ud2", "repz ret", "rep ret")
 
     def insn(self, ins):
         m = ins.mnemonic
+        if m in ("repz ret", "rep ret"):   # AMD's two-byte return (MSVC 8's __security_check_cookie)
+            m = "ret"
+        if m.startswith("lock "):   # capstone spells the prefix into the mnemonic; is_locked() handles the locking
+            m = m[5:]
         ops = ins.operands
         pre = ins.prefix
         rep = 0xF3 in pre or 0xF2 in pre
@@ -772,6 +789,12 @@ class FunctionTranslator:
     def i_loop(self, ins, o):
         return f"if (--c->ecx != 0) {self.target_stmt(o[0].imm)}"
 
+    def i_loope(self, ins, o):
+        return f"if (--c->ecx != 0 && c->zf) {self.target_stmt(o[0].imm)}"
+
+    def i_loopne(self, ins, o):
+        return f"if (--c->ecx != 0 && !c->zf) {self.target_stmt(o[0].imm)}"
+
     # --- string instructions
     def string_op(self, ins, m, rep):
         size = {"b": 1, "w": 2, "d": 4}[m[-1]]
@@ -988,6 +1011,8 @@ class FunctionTranslator:
     def vector_int(self, ins, m, o):
         if m in ("emms", "femms"):
             return ";"
+        if m in ("cvttps2pi", "cvtps2pi"):
+            return None
         if not o:
             return None
         d = self.vreg(ins, o[0])
@@ -1072,6 +1097,8 @@ class FunctionTranslator:
             body = " ".join(f"{d}.f[{k}] = {d}.f[{k}] {opr} s{k}_;" for k in range(n))
             loads = " ".join(f"float s{k}_ = {src(k)};" for k in range(n))
             return f"{{ {loads} {body} }}"
+        if m in ("movntps", "movntpd", "movntdq"):   # non-temporal stores: plain stores here (Assassin's Creed)
+            m = "movaps"
         if m in ("movaps", "movups", "movdqa", "movdqu", "movapd", "movupd"):
             if o[0].type == CS_OP_MEM:
                 return f"memcpy(HP({self.addr(ins, o[0])}), {self.xmm(ins, o[1])}.b, 16);"
@@ -1085,8 +1112,8 @@ class FunctionTranslator:
                 d = self.xmm(ins, o[0])
                 return f"{d}.f[0] = RF32({self.addr(ins, o[1])}); {d}.u[1] = {d}.u[2] = {d}.u[3] = 0;"
             return f"{self.xmm(ins, o[0])}.f[0] = {self.xmm(ins, o[1])}.f[0];"
-        if m in ("movlps", "movhps"):
-            k = 0 if m == "movlps" else 1
+        if m in ("movlps", "movhps", "movlpd", "movhpd"):
+            k = 0 if m in ("movlps", "movlpd") else 1
             if o[0].type == CS_OP_MEM:
                 return f"W64({self.addr(ins, o[0])}, {self.xmm(ins, o[1])}.q[{k}]);"
             return f"{self.xmm(ins, o[0])}.q[{k}] = R64({self.addr(ins, o[1])});"
@@ -1112,15 +1139,21 @@ class FunctionTranslator:
                 a = self.addr(ins, o[1])
                 s = lambda k: f"RF32({a} + {4 * k})"
             else:
-                sx = self.xmm(ins, o[1])
-                s = lambda k: f"{sx}.f[{k}]"
+                # the source register is copied first: with the same register as source (shufps xmm0, xmm0,
+                # imm - broadcasts/permutes in matrix code) lanes 2-3 used to be read after lanes 0-1 were
+                # overwritten (Assassin's Creed's camera matrix got a garbage row: an all-black world)
+                s = lambda k: f"u_.f[{k}]"
+                sel = [(imm >> (2 * k)) & 3 for k in range(4)]
+                return (f"{{ XMM t_ = {d}, u_ = {self.xmm(ins, o[1])}; {d}.f[0] = t_.f[{sel[0]}]; "
+                        f"{d}.f[1] = t_.f[{sel[1]}]; {d}.f[2] = {s(sel[2])}; {d}.f[3] = {s(sel[3])}; }}")
             sel = [(imm >> (2 * k)) & 3 for k in range(4)]
             return (f"{{ XMM t_ = {d}; {d}.f[0] = t_.f[{sel[0]}]; {d}.f[1] = t_.f[{sel[1]}]; "
                     f"{d}.f[2] = {s(sel[2])}; {d}.f[3] = {s(sel[3])}; }}")
         if m in ("unpcklps", "unpckhps"):
-            d, s = self.xmm(ins, o[0]), self.xmm(ins, o[1])
+            d = self.xmm(ins, o[0])
+            s = f"*(XMM *)HP({self.addr(ins, o[1])})" if o[1].type == CS_OP_MEM else self.xmm(ins, o[1])
             b = 0 if m == "unpcklps" else 2
-            return (f"{{ XMM a_ = {d}, b_ = {s}; {d}.f[0] = a_.f[{b}]; {d}.f[1] = b_.f[{b}]; "
+            return (f"{{ XMM a_ = {d}, b_; memcpy(&b_, &{s}, 16); {d}.f[0] = a_.f[{b}]; {d}.f[1] = b_.f[{b}]; "
                     f"{d}.f[2] = a_.f[{b + 1}]; {d}.f[3] = b_.f[{b + 1}]; }}")
         sfn = {"sqrtss": "sqrtf({})", "rsqrtss": "1.0f / sqrtf({})", "rcpss": "1.0f / {}"}
         pfn = {"sqrtps": "sqrtf({})", "rsqrtps": "1.0f / sqrtf({})", "rcpps": "1.0f / {}",
@@ -1204,7 +1237,115 @@ class FunctionTranslator:
             return f"W32({self.addr(ins, o[0])}, c->mxcsr);"
         if m in ("prefetchnta", "prefetcht0", "prefetcht1", "prefetcht2", "emms", "sfence", "lfence", "mfence"):
             return ";"
+        r = self.sse2(ins, m, o)
+        if r is not None:
+            return r
         raise Unsupported(m)
+
+    # --- SSE2 doubles (VC8 /arch:SSE2 float<->double code), plus a few conversions and mask moves
+    def sd_src(self, ins, op):   # scalar double source
+        return f"RF64({self.addr(ins, op)})" if op.type == CS_OP_MEM else f"{self.xmm(ins, op)}.d[0]"
+
+    def pd_src(self, ins, op, kind="d"):   # lane k of a 128-bit source, as double (d) or uint64 (q)
+        if op.type == CS_OP_MEM:
+            a = self.addr(ins, op)
+            return (lambda k: f"RF64({a} + {8 * k})") if kind == "d" else (lambda k: f"R64({a} + {8 * k})")
+        x = self.xmm(ins, op)
+        return lambda k: f"{x}.{kind}[{k}]"
+
+    def ss_src(self, ins, op):
+        return f"RF32({self.addr(ins, op)})" if op.type == CS_OP_MEM else f"{self.xmm(ins, op)}.f[0]"
+
+    def sse2(self, ins, m, o):
+        ar = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
+        if m[-2:] in ("sd", "pd") and m[:-2] in ar and len(o) == 2:
+            d, op = self.xmm(ins, o[0]), ar[m[:-2]]
+            if m.endswith("sd"):
+                return f"{{ double s_ = {self.sd_src(ins, o[1])}; {d}.d[0] = {d}.d[0] {op} s_; }}"
+            src = self.pd_src(ins, o[1])
+            return (f"{{ double s0_ = {src(0)}, s1_ = {src(1)}; {d}.d[0] = {d}.d[0] {op} s0_; "
+                    f"{d}.d[1] = {d}.d[1] {op} s1_; }}")
+        if m in ("minsd", "maxsd"):
+            d, cmp = self.xmm(ins, o[0]), ("<" if m == "minsd" else ">")
+            return f"{{ double s_ = {self.sd_src(ins, o[1])}; {d}.d[0] = {d}.d[0] {cmp} s_ ? {d}.d[0] : s_; }}"
+        if m == "sqrtsd":
+            return f"{self.xmm(ins, o[0])}.d[0] = sqrt({self.sd_src(ins, o[1])});"
+        if m == "movsd" and len(o) == 2:
+            if o[0].type == CS_OP_MEM:
+                return f"W64({self.addr(ins, o[0])}, {self.xmm(ins, o[1])}.q[0]);"
+            d = self.xmm(ins, o[0])
+            if o[1].type == CS_OP_MEM:
+                return f"{d}.q[0] = R64({self.addr(ins, o[1])}); {d}.q[1] = 0;"
+            return f"{d}.q[0] = {self.xmm(ins, o[1])}.q[0];"
+        if m == "cvtss2sd":
+            return f"{{ float s_ = {self.ss_src(ins, o[1])}; {self.xmm(ins, o[0])}.d[0] = (double)s_; }}"
+        if m == "cvtsd2ss":
+            return f"{{ double s_ = {self.sd_src(ins, o[1])}; {self.xmm(ins, o[0])}.f[0] = (float)s_; }}"
+        if m == "cvtpd2ps":
+            d, src = self.xmm(ins, o[0]), self.pd_src(ins, o[1])
+            return (f"{{ double s0_ = {src(0)}, s1_ = {src(1)}; {d}.f[0] = (float)s0_; {d}.f[1] = (float)s1_; "
+                    f"{d}.u[2] = {d}.u[3] = 0; }}")
+        if m == "cvtsi2sd":
+            return f"{self.xmm(ins, o[0])}.d[0] = (double)(int32_t){self.read(ins, o[1], 4)};"
+        if m in ("cvttsd2si", "cvtsd2si"):
+            s_ = self.sd_src(ins, o[1])
+            conv = f"(int32_t){s_}" if m == "cvttsd2si" else f"(int32_t)nearbyint({s_})"
+            return self.write(ins, o[0], f"(uint32_t){conv}")
+        if m in ("comisd", "ucomisd"):
+            return f"FCOMI(c, {self.xmm(ins, o[0])}.d[0], {self.sd_src(ins, o[1])});"
+        bit = {"andpd": "{d} & {s}", "andnpd": "~{d} & {s}", "orpd": "{d} | {s}", "xorpd": "{d} ^ {s}"}
+        if m in bit:
+            d, src = self.xmm(ins, o[0]), self.pd_src(ins, o[1], "q")
+            return ("{ " + " ".join(f"uint64_t s{k}_ = {src(k)};" for k in range(2)) + " " + " ".join(
+                f"{d}.q[{k}] = " + bit[m].format(d=f"{d}.q[{k}]", s=f"s{k}_") + ";" for k in range(2)) + " }")
+        if m in ("unpcklpd", "unpckhpd"):
+            d, src = self.xmm(ins, o[0]), self.pd_src(ins, o[1], "q")
+            if m == "unpcklpd":
+                return f"{{ uint64_t s_ = {src(0)}; {d}.q[1] = s_; }}"
+            return f"{{ uint64_t s_ = {src(1)}; {d}.q[0] = {d}.q[1]; {d}.q[1] = s_; }}"
+        if m == "shufpd":
+            d, src, imm = self.xmm(ins, o[0]), self.pd_src(ins, o[1], "q"), o[2].imm
+            return f"{{ uint64_t a_ = {d}.q[{imm & 1}], b_ = {src((imm >> 1) & 1)}; {d}.q[0] = a_; {d}.q[1] = b_; }}"
+        pred = {"eq": "a_ == b_", "lt": "a_ < b_", "le": "a_ <= b_", "unord": "(a_ != a_ || b_ != b_)",
+                "neq": "!(a_ == b_)", "nlt": "!(a_ < b_)", "nle": "!(a_ <= b_)", "ord": "(a_ == a_ && b_ == b_)"}
+        if m.startswith("cmp") and m[-2:] in ("sd", "pd") and m[3:-2] in pred:
+            d, n = self.xmm(ins, o[0]), (1 if m.endswith("sd") else 2)
+            src = self.pd_src(ins, o[1])
+            return "{ " + " ".join(f"{{ double a_ = {d}.d[{k}], b_ = {src(k)}; {d}.q[{k}] = ({pred[m[3:-2]]}) ? ~0ull : 0; }}"
+                                   for k in range(n)) + " }"
+        if m == "movmskps":
+            x = self.xmm(ins, o[1])
+            return self.write(ins, o[0], f"(({x}.u[0] >> 31) | (({x}.u[1] >> 31) << 1) | (({x}.u[2] >> 31) << 2) | (({x}.u[3] >> 31) << 3))", 4)
+        if m == "movmskpd":
+            x = self.xmm(ins, o[1])
+            return self.write(ins, o[0], f"(uint32_t)(({x}.q[0] >> 63) | (({x}.q[1] >> 63) << 1))", 4)
+        if m in ("cvtdq2ps", "cvttps2dq", "cvtps2dq"):
+            d = self.xmm(ins, o[0])
+            if o[1].type == CS_OP_MEM:
+                a = self.addr(ins, o[1])
+                src = (lambda k: f"(int32_t)R32({a} + {4 * k})") if m == "cvtdq2ps" else (lambda k: f"RF32({a} + {4 * k})")
+            else:
+                x = self.xmm(ins, o[1])
+                src = (lambda k: f"(int32_t){x}.u[{k}]") if m == "cvtdq2ps" else (lambda k: f"{x}.f[{k}]")
+            if m == "cvtdq2ps":
+                conv = lambda k: f"{d}.f[{k}] = (float)t{k}_;"
+                ty = "int32_t"
+            else:
+                conv = (lambda k: f"{d}.u[{k}] = (uint32_t)(int32_t)t{k}_;") if m == "cvttps2dq" else \
+                       (lambda k: f"{d}.u[{k}] = (uint32_t)(int32_t)nearbyintf(t{k}_);")
+                ty = "float"
+            return "{ " + " ".join(f"{ty} t{k}_ = {src(k)};" for k in range(4)) + " " + " ".join(conv(k) for k in range(4)) + " }"
+        if m in ("cvttps2pi", "cvtps2pi") and o[0].type == CS_OP_REG and ins.reg_name(o[0].reg).startswith("mm"):
+            mm = f"c->mm[{ins.reg_name(o[0].reg)[2:]}]"
+            if o[1].type == CS_OP_MEM:
+                a = self.addr(ins, o[1])
+                f0, f1 = f"RF32({a})", f"RF32({a} + 4)"
+            else:
+                x = self.xmm(ins, o[1])
+                f0, f1 = f"{x}.f[0]", f"{x}.f[1]"
+            cv = (lambda v: f"(uint32_t)(int32_t){v}") if m == "cvttps2pi" else (lambda v: f"(uint32_t)(int32_t)nearbyintf({v})")
+            return f"{{ float a_ = {f0}, b_ = {f1}; {mm} = (uint64_t){cv('a_')} | ((uint64_t){cv('b_')} << 32); }}"
+        return None
 
 
 class Program:
@@ -1281,7 +1422,7 @@ class Program:
             return len(list(md.disasm(self.code(t, t + 32), t, count=3))) == 3
 
         cands = {v for v in imms if accept(v)} | cross
-        for name in (".rdata", ".data"):
+        for name in (n for n in (".rdata", ".data") if n in secs):
             a, b = secs[name]
             for va in range(a, b - 3, 4):
                 v = int.from_bytes(self.img[va - self.base:va - self.base + 4], "little")
@@ -1356,8 +1497,12 @@ class Program:
                         t = ins.operands[0].imm & 0xffffffff
                         if tlo <= t < thi and t not in self.entries and t not in seen:
                             cands.add(t); seen.add(t); todo.append(t)
+        npop = 0
         while todo:
             e = todo.pop()
+            npop += 1
+            if npop % 5000 == 0 and os.environ.get('RC_TPROG'):
+                print(f'[ptr] {npop} walked, {len(todo)} queued, {len(cands)} candidates, at {e:#x}', file=sys.stderr, flush=True)
             k = bisect.bisect_right(ordered_g, e)
             span_end = ordered_g[k] if k < len(ordered_g) else thi
             # follow control flow inside [e, span_end): code after an unconditional jmp/ret is still part of
@@ -1367,7 +1512,9 @@ class Program:
                 a = walk.pop()
                 if a in visited or not (e <= a < span_end):
                     continue
-                for ins in md.disasm(self.code(a, span_end), a):
+                # (a window, not the whole span: copying up to the next entry made this quadratic on
+                # Ashes 2009, whose .text has multi-MB stretches Ghidra never claimed)
+                for ins in md.disasm(self.code(a, min(span_end, a + 0x2000)), a):
                     if ins.address in visited:
                         break
                     visited.add(ins.address)
@@ -1424,6 +1571,73 @@ class Program:
             self.functions[t] = {"entry": t, "name": f"PTR_{t:08x}", "ranges": [[t, nxt]]}
         self.entries |= cands
         self.pointer_entries = len(cands)
+        self.fold_interior_entries()
+
+    @staticmethod
+    def junk_body(body):
+        """Data decoded as code somewhere in the body: the whole function becomes a trapping stub, so folding
+        clean entries into it would break them (AC1: the static initializer 0x15fdc40 shared a body with
+        data-like pointer entries and trapped at start-up)."""
+        for i in body:
+            m = i.mnemonic[5:] if i.mnemonic.startswith("lock ") else i.mnemonic
+            if m in JUNK_OPS or (m in ("push", "pop") and i.op_str in ("es", "cs", "ss", "ds")):
+                return True
+        return False
+
+    def fold_interior_entries(self, limit=40000):
+        """A pointer entry decodes up to the next *Ghidra* function start, so a stretch Ghidra never claimed with
+        many pointer entries in it was translated once per entry. AC1 0x11225e8..: ~2,000 case labels of an
+        unclaimed function, each jumping to the same 10K-instruction tail -> recomp_591..598 = 1 GB of C, 19 GB
+        per clang. Pointer entries up to the same Ghidra start share one body, decoded from all of them at once
+        (the lowest is the host); the others become stubs `recomp_resume = addr; f_host(c);` and the host jumps
+        there first thing. A shared body over `limit` instructions falls back to folding only entries that the
+        previous host's own body runs through."""
+        self.hosted, self.interior = {}, {}
+        groups = {}
+        for t in sorted(e for e, f in self.functions.items() if f["name"].startswith("PTR_")):
+            groups.setdefault(self.next_entry(t), []).append(t)
+        for g in groups.values():
+            rest = g
+            while len(rest) > 1:
+                edges = []
+                try:
+                    body = FunctionTranslator(self, self.functions[rest[0]]).decode(rest[1:], edges)
+                except Exception:
+                    rest = rest[1:]
+                    continue
+                junk = {i.address for i in body if self.junk_body([i])}
+                if junk:
+                    # entries whose code can run into data stay on their own (each becomes a stub or traps
+                    # where it always did); the clean ones still share a body
+                    preds = {}
+                    for a, t in edges:
+                        preds.setdefault(t, []).append(a)
+                    bad, todo = set(junk), list(junk)
+                    while todo:
+                        for a in preds.get(todo.pop(), ()):
+                            if a not in bad:
+                                bad.add(a)
+                                todo.append(a)
+                    rest = [t for t in rest if t not in bad]
+                    continue
+                h = rest[0]
+                if len(body) <= limit:
+                    addrs = {i.address for i in body}
+                    folded = [t for t in rest[1:] if t in addrs]
+                    rest = []
+                else:
+                    try:
+                        addrs = {i.address for i in FunctionTranslator(self, self.functions[h]).decode()}
+                    except Exception:
+                        addrs = set()
+                    folded = [t for t in rest[1:] if t in addrs]
+                    rest = [t for t in rest[1:] if t not in addrs]
+                for t in folded:
+                    self.interior[t] = h
+                if folded:
+                    self.hosted[h] = folded
+        print("pointer entries folded into a shared body: %d (%d hosts)"
+              % (len(self.interior), len(self.hosted)), file=sys.stderr)
 
     def code(self, a, b):
         return self.img[a - self.base:b - self.base]
@@ -1444,6 +1658,27 @@ class Program:
                     v = op.imm if op.type == CS_OP_IMM else (op.mem.disp & 0xffffffff if op.type == CS_OP_MEM else None)
                     if v in self.entries and v != f["entry"]:
                         out.add(v)
+                    elif self.follow_tables and v is not None and v not in self.entries:
+                        out |= self.table_at(v)
+        return out
+
+    def table_at(self, v):
+        """Function pointers stored from v on (a vtable or callback table): consecutive entries, stopping at
+        the first word that isn't one. Only used by --export-roots, where nothing else finds vtables."""
+        out = set()
+        off = v - self.base
+        first = True
+        while 0 <= off <= len(self.img) - 4 and len(out) < 2048:
+            w = int.from_bytes(self.img[off:off + 4], "little")
+            if first and w == 0:   # initializer tables (_initterm's __xi_a) start with a null
+                off += 4
+                first = False
+                continue
+            first = False
+            if w not in self.entries:
+                break
+            out.add(w)
+            off += 4
         return out
 
     def closure(self, roots):
@@ -1457,6 +1692,11 @@ class Program:
         return seen
 
 
+JUNK_OPS = {"outsb", "outsd", "outsw", "insb", "insd", "insw", "in", "out", "arpl", "bound", "daa", "das", "aaa",
+            "aas", "aam", "aad", "into", "int1", "lcall", "ljmp", "sldt", "les", "lds", "popaw", "pushaw", "retf",
+            "hlt", "cli", "sti"}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("exe")
@@ -1466,11 +1706,34 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--per-file", type=int, default=400)
     ap.add_argument("--trace", action="store_true", help="call trace_insn() before every instruction")
+    ap.add_argument("--module", default="", help="a DLL: its registration function is register_functions_<module>")
+    ap.add_argument("--export-roots", default="", help="a DLL: translate only what is reachable from the exports "
+                    "these PE files (comma-separated) import from it; with --all, from every export")
     a = ap.parse_args()
 
     prog = Program(a.exe, a.functions_json)
     prog.trace = a.trace
-    if a.all:
+    prog.follow_tables = False
+    if a.export_roots:
+        # a DLL: only what the importers can reach - the exports they import, DllMain, and everything called or
+        # pointed to (incl. vtables) from there. Skips unused parts (d3dx's HLSL compiler) and data Ghidra
+        # decoded as code.
+        pe = pefile.PE(a.exe)
+        names = set()
+        mod = os.path.basename(a.exe).lower()
+        for imp in a.export_roots.split(","):
+            ip = pefile.PE(imp)
+            for d in getattr(ip, "DIRECTORY_ENTRY_IMPORT", []):
+                if d.dll.decode().lower() in (mod, "msvcrt.dll" if mod == "msvcr80.dll" else mod):
+                    names |= {i.name.decode() if i.name else i.ordinal for i in d.imports}
+        roots = {pe.OPTIONAL_HEADER.ImageBase + pe.OPTIONAL_HEADER.AddressOfEntryPoint}
+        for s in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+            if (s.name.decode() if s.name else s.ordinal) in names or a.all:
+                roots.add(pe.OPTIONAL_HEADER.ImageBase + s.address)
+        prog.follow_tables = True
+        chosen = prog.closure(sorted(roots))
+        print(f"export roots: {len(names)} imported names, {len(roots)} roots -> {len(chosen)} functions")
+    elif a.all:
         chosen = set(prog.entries)
     else:
         chosen = prog.closure([int(x, 16) for x in a.roots.split(",") if x])
@@ -1483,12 +1746,27 @@ def main():
     unsup = Counter()
     bad_funcs = []
     chunks, cur = [], []
+    interior = getattr(prog, "interior", {})
     for e in sorted(chosen):
+        if e in interior:
+            h = interior[e]
+            cur.append(f"void f_{e:08x}(CPU *c) {{ recomp_resume = 0x{e:08x}u; f_{h:08x}(c); }}" + "\n")
+            stats["functions"] += 1
+            stats["folded_pointer_entries"] += 1
+            if len(cur) >= a.per_file:
+                chunks.append(cur)
+                cur = []
+            continue
         try:
             src, uns, n = FunctionTranslator(prog, prog.functions[e]).translate()
         except Exception as ex:  # keep going; record the failure
             src = f"void f_{e:08x}(CPU *c) {{ guest_trap(c, 0x{e:08x}u, \"translator failed: {type(ex).__name__}\"); }}\n"
             uns, n = [f"translator crash: {type(ex).__name__}: {ex}"], 0
+        if any(u.split(" ")[0] in JUNK_OPS for u in uns):
+            # data Ghidra disassembled (port I/O, BCD, segment ops never appear in a DLL's real code): a stub
+            src = f"void f_{e:08x}(CPU *c) {{ guest_trap(c, 0x{e:08x}u, \"data decoded as code (not translated)\"); }}\n"
+            stats["junk_functions"] += 1
+            stats["junk_instructions"] += n
         stats["functions"] += 1
         stats["instructions"] += n
         if uns:
@@ -1517,7 +1795,8 @@ def main():
         f.write('#include "recomp.h"\n\n')
         for e in missing:
             f.write(f'void f_{e:08x}(CPU *c) {{ guest_trap(c, 0x{e:08x}u, "function not recompiled"); }}\n')
-        f.write("\nvoid register_all_functions(void) {\n")
+        reg = f"register_functions_{a.module}" if a.module else "register_all_functions"
+        f.write(f"\nvoid {reg}(void) {{\n")
         for e in sorted(prog.entries):
             f.write(f"    register_function(0x{e:08x}u, f_{e:08x});\n")
         f.write("}\n")

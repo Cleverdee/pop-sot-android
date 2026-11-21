@@ -423,7 +423,7 @@ static void camera_units(double rx, double ry, float k, int *dx, int *dy) {
     }
     float sp = RF32(GAME_MOUSE_OPT);
     int ux;
-    if (g_force_sp >= 0 && RF32(GAME_MOUSE_OPT) != g_force_sp) memcpy(g_mem + GAME_MOUSE_OPT, &g_force_sp, 4);   /* fine input steps */
+    if (GAME_MOUSE_OPT && g_force_sp >= 0 && RF32(GAME_MOUSE_OPT) != g_force_sp)   /* 0: address not found yet */ memcpy(g_mem + GAME_MOUSE_OPT, &g_force_sp, 4);   /* fine input steps */
     if (g_ft_reads > 0) { rx += g_ft_counts; g_ft_reads--; }   /* fake swipe (yf_poll) */
     int follow = yaw_follow(rx, &ux);
     if (follow) g_qx = 0;   /* the camera's angle follows the finger (above) */

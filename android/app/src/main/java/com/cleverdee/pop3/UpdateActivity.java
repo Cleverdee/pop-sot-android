@@ -36,8 +36,8 @@ import java.net.URL;
 
    check() is also run quietly from the start screen, at most once a day (MenuActivity). */
 public class UpdateActivity extends Activity {
-    static final String REPO = "Cleverdee/pop-ww-android";
-    private static final String ACTION_INSTALLED = "com.cleverdee.popww.INSTALL_STATUS";
+    static final String REPO = "Cleverdee/pop-sot-android";
+    private static final String ACTION_INSTALLED = "com.cleverdee.popsot.INSTALL_STATUS";
     private static final String PREFS = "updates";
 
     /* the latest release, when newer than this app */
@@ -141,7 +141,7 @@ public class UpdateActivity extends Activity {
         HttpURLConnection h = (HttpURLConnection) new URL(url).openConnection();
         h.setConnectTimeout(15000);
         h.setReadTimeout(30000);
-        h.setRequestProperty("User-Agent", "PoPWW-Android/" + currentVersion());
+        h.setRequestProperty("User-Agent", "PoPSoT-Android/" + currentVersion());
         h.setInstanceFollowRedirects(true);   /* release downloads redirect to GitHub's file host */
         return h;
     }

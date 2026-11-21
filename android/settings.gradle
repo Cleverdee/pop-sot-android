@@ -11,5 +11,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = 'popww'
+rootProject.name = 'popsot'
 include ':app'

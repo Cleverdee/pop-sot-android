@@ -296,6 +296,7 @@ void cpuid(CPU *c) {
 /* A 2 GHz timestamp counter, consistent with the CPU speed reported through the registry. */
 uint64_t (*g_rdtsc_hook)(void);   /* set by the host for deterministic runs */
 int g_preempt_on;
+__thread uint32_t recomp_resume;
 void (*g_preempt_fn)(void);       /* the deterministic scheduler's yield */
 void guest_preempt(CPU *c) { c->preempt_ticks = 0; if (g_preempt_fn) g_preempt_fn(); }
 void rdtsc(CPU *c) {
