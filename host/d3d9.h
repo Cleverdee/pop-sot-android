@@ -62,6 +62,7 @@ typedef struct Shader {
     uint32_t handle;                      /* odd table handle (shader_get) */
     uint32_t *elems; uint32_t n_elems;    /* vertex declarations: the D3DVERTEXELEMENT9 array as given (8 bytes each) */
     void *gpu;                            /* renderer: a vertex shader's GPU translation (render_wgpu.c) */
+    int logged;                           /* pixel shaders: "not translatable" already logged */
 } Shader;
 
 #define MAX_TS 512

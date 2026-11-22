@@ -1011,6 +1011,19 @@ W(dev_CreatePixelShader) {
     s->code_len = copy_tokens(ARG(1), 0x0000FFFFu, &s->code);
     s = intern_shader(s);
     if (g_log_d3d) fprintf(stderr, "[d3d] CreatePixelShader: %u tokens (version %08x)\n", s->code_len, s->code ? s->code[0] : 0);
+    {   /* shaders we can't translate are drawn with the fixed-function fallback: name them at load with their tokens,
+           so a wrong-looking effect (water) can be traced without reaching it in the game */
+        extern char *ps_to_wgsl(const uint32_t *code, uint32_t n, char *why, size_t why_n);
+        char why[96] = "";
+        char *fs = ps_to_wgsl(s->code, s->code_len, why, sizeof why);
+        if (fs) free(fs);
+        else if (!s->logged) {
+            s->logged = 1;
+            fprintf(stderr, "[d3d] pixel shader not translatable (%s):", why);
+            for (uint32_t k = 0; k < s->code_len; k++) fprintf(stderr, " %08x", s->code[k]);
+            fprintf(stderr, "\n");
+        }
+    }
     W32(ARG(2), com_new(&IDirect3DPixelShader9_i, RT_SHADER, s));
     RET(3, S_OK);
 }
