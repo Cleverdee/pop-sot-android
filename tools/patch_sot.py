@@ -80,4 +80,43 @@ for f in glob.glob(sys.argv[1] + "/*.c"):
     if s2 != s:
         open(f, "w").write(s2)
 
+# SoT is built with asserts: the slider's SetRange (FUN_00717850) asserts min < max (MNU_Slider.cpp line 40) and the
+# Graphics page sets the Resolution slider to (0, modes - 1) = (0, 0) with the host's one mode -> "Runtime Error!" abort.
+# Equal min and max are let through (jl -> jle). The slider draw's float paths (fidiv by the range) give 0 for a zero
+# range, like the idiv above.
+for f in glob.glob(sys.argv[1] + "/*.c"):
+    s = open(f).read()
+    if "void f_00717850(" not in s:
+        continue
+    i = s.index("void f_00717850(")
+    j = s.index("\n}\n", i)
+    body = s[i:j]
+    old = "if ((r->sf != r->of)) goto L_00717875; /* jl 0x717875 */"
+    if old in body:
+        body = body.replace(old, "if ((r->sf != r->of) || r->zf) goto L_00717875; /* jl 0x717875 (min == max allowed) */")
+        s = s[:i] + body + s[j:]
+        done += 1
+        print("  slider SetRange 0x717850: min == max allowed")
+    else:
+        print("  WARNING: slider SetRange 0x717850 not patched (code changed?)")
+    open(f, "w").write(s)
+for f in glob.glob(sys.argv[1] + "/*.c"):
+    s = open(f).read()
+    if "void f_00718060(" not in s:
+        continue
+    i = s.index("void f_00718060(")
+    j = s.index("\n}\n", i)
+    body = s[i:j]
+    old = "FDIVx(x, x->s[0], (double)(int32_t)R32((uint32_t)(r->esp + 0x18u)))"
+    new = ("((int32_t)R32((uint32_t)(r->esp + 0x18u)) ? FDIVx(x, x->s[0], (double)(int32_t)R32((uint32_t)(r->esp + 0x18u)))"
+           " : 0.0) /* zero range -> 0 */")
+    n = body.count(old)
+    if n:
+        s = s[:i] + body.replace(old, new) + s[j:]
+        open(f, "w").write(s)
+        done += n
+        print("  slider draw 0x718060: %d fidiv(s) zero range -> 0" % n)
+    else:
+        print("  WARNING: slider draw fidiv not patched (code changed?)")
+
 print(f"patch_sot: {done} patch(es)")

@@ -1,7 +1,7 @@
 # Prince of Persia: The Sands of Time - Android port hand-over
 
 Tree: `E:\cricket-apk\pop-sot\src`, branch `sot-port` -> remote `cleverdee` main (github.com/Cleverdee/pop-sot-android,
-public). Released v0.1.0 and v0.1.1 (water fix) on 2026-11-22 (APKs and release notes in work\), cloned from the WW tree at v0.1.8
+public). Released v0.1.0, v0.1.1 (water fix) and v0.1.2 (Graphics menu fix) on 2026-11-22 (APKs and release notes in work\), cloned from the WW tree at v0.1.8
 (`ce73c2e`). Package `com.cleverdee.popsot` (Java package/JNI stay `com.cleverdee.pop3`, lib `libpop3.so`).
 Work files outside the repo: `E:\cricket-apk\pop-sot\work` (pop.exe = GOG POP.EXE as installed, functions.json,
 ghidra.log, translate.log, build.log). Game folder: `E:\cricket-apk\Prince of Persia The Sands of Time`.
@@ -37,6 +37,11 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
   palace): ps 10029 samples the 512x512 screen copy with TTFF 0x102; fixed in a850f3f (divide by w), released in
   v0.1.1 before the user looked at it again: confirm on the phone. Snap text-only with RC_CAP_RANGE="-1 -1" (per-draw
   PNGs crash wgpu at the screen-copy draw).
+- Graphics menu crash (players' report, reproduced 2026-11-22): assert "min < max" in MNU_Slider.cpp:40 from the
+  Resolution slider's SetRange(0, modes - 1) with one host mode. patch_sot.py: SetRange 0x717850 allows min == max,
+  slider draw fidivs give 0 for a zero range (on top of the old idiv 0x7182c2 patch); a second assert (rangeSize > 0)
+  followed, so host/user32.c MessageBoxA now answers the CRT assert box with Ignore (release-build behaviour, log capped
+  at 20). Checked on the phone: page opens, sliders move, Yes applies. Released v0.1.2.
 - Plays: logos -> profile menu -> new profile -> main menu -> Start New Game -> opening cut-scene -> control of
   the Prince in the opening courtyard, 50-60 FPS at 540p. Checked on the phone (A17).
 - Controls working (checked): menu/play detection (page stack GAME_UI_VEC 0x10), menu taps select items (cursor

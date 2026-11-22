@@ -209,8 +209,13 @@ W(GetSystemMetrics) {
 }
 W(SystemParametersInfoA) { RET(4, 1); }
 W(MessageBoxA) {
-    fprintf(stderr, "[MessageBox] %s: %s\n", ARG(2) ? GSTR(ARG(2)) : "", ARG(1) ? GSTR(ARG(1)) : "");
     uint32_t kind = ARG(3) & 0xF;   /* MB_YESNO / MB_YESNOCANCEL: answer No (the game offers a safe-mode config after a crash) */
+    static int asserts;             /* an ignored assert can repeat every frame: log the first few only */
+    if (kind != 2 || asserts < 20)
+        fprintf(stderr, "[MessageBox] %s: %s\n", ARG(2) ? GSTR(ARG(2)) : "", ARG(1) ? GSTR(ARG(1)) : "");
+    /* MB_ABORTRETRYIGNORE is the CRT's assert box (Sands of Time ships with asserts on): Ignore, as a release build
+       would have no assert at all. IDOK there would abort the game ("Runtime Error!", ExitProcess 3). */
+    if (kind == 2) { if (asserts++ < 20) fprintf(stderr, "[MessageBox] assert ignored\n"); RET(4, 5 /* IDIGNORE */); }
     RET(4, kind == 4 || kind == 3 ? 7 /* IDNO */ : 1 /* IDOK */);
 }
 
