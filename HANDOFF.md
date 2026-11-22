@@ -33,8 +33,10 @@ Helper scripts outside the repo: `E:\cricket-apk\pop-sot\tools` (xref.py: functi
 - Ghidra: 9574 functions (~10 min). Translate: 17791 functions, 61 files, max 4.8 MB, 3 min. out_all stamped.
 
 ## Now (2026-11-22)
-- Open bug to fix next: guards drawn without legs (torso/head fine; the Prince fine). Not the VS constant cap
-  (game doesn't read [CAPS]). Capture with files/snap.txt + RC_CAP_RANGE while a guard is on screen.
+- Guards' legs: the user reports them fixed (no code change aimed at it). Water (pool with a round pillar, opening
+  palace): ps 10029 samples the 512x512 screen copy with TTFF 0x102; fixed in a850f3f (divide by w), released in
+  v0.1.1 before the user looked at it again: confirm on the phone. Snap text-only with RC_CAP_RANGE="-1 -1" (per-draw
+  PNGs crash wgpu at the screen-copy draw).
 - Plays: logos -> profile menu -> new profile -> main menu -> Start New Game -> opening cut-scene -> control of
   the Prince in the opening courtyard, 50-60 FPS at 540p. Checked on the phone (A17).
 - Controls working (checked): menu/play detection (page stack GAME_UI_VEC 0x10), menu taps select items (cursor
