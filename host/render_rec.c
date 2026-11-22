@@ -881,11 +881,12 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     }
     unpack_color(st->rs[60], u->tfactor);
     u->misc[0] = (st->rs[24] & 255) / 255.f;
-    {   /* pixel shader 1.x: stages with D3DTTFF_PROJECTED (256) divide their coordinates by the last one (water's screen-space refraction) */
+    {   /* pixel shader 1.x: stages with D3DTTFF_PROJECTED (256) divide their coordinates by the last one (water's screen-space refraction).
+           COUNT1/COUNT2 + PROJECTED (SoT water: 0x102) means /w as on PC drivers, not u/v: dividing by y flattened the water */
         uint32_t pj = 0;
         if (st->ps)
             for (int s = 0; s < 4; s++)
-                if (st->tss[s][24] & 256) { uint32_t c = st->tss[s][24] & 255; pj |= (c < 2 || c > 4 ? 4u : c) << (3 * s); }
+                if (st->tss[s][24] & 256) { uint32_t c = st->tss[s][24] & 255; pj |= (c < 3 || c > 4 ? 4u : c) << (3 * s); }
         u->misc[1] = (float)pj;
     }
     for (int i = 0; i < 4; i++) u->mat_diffuse[i] = 1.f;
